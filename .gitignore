@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Claude Code local state
+.claude/
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# Node (future)
+node_modules/
+.env
+.env.*
+!.env.example
+dist/
+build/
+.svelte-kit/
