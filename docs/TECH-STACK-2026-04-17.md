@@ -24,7 +24,10 @@
 | Local filesystem for git | **`@isomorphic-git/lightning-fs`** on IndexedDB |
 | Auth | **GitHub Device Flow** |
 | PWA | **`@vite-pwa/sveltekit`** (Workbox under the hood) |
-| Testing | **Vitest** (unit) + **Playwright** (e2e) |
+| Testing | **Vitest** (pure / functional modules only — no UI tests) |
+| Lint | **ESLint flat config** — `typescript-eslint` strict + stylistic, `svelte`, `import-x`, `unicorn`, `promise` |
+| Format | **Prettier** with `prettier-plugin-svelte` + `prettier-plugin-tailwindcss` |
+| Single gate | **`npm run check`** — types, lint, format, tests in parallel; must pass before any task is done |
 
 ---
 
@@ -185,21 +188,26 @@ Per project preference, Svelte code prioritizes **readability over cleverness**:
 
 ## Testing
 
-### Vitest — unit
-- Pure modules (hashing, sidecar parsing, wikilink extractor, merge logic): 100% target.
-- Svelte components: minimal testing; favor e2e for UI behavior.
+### Vitest — pure / functional modules only
+- Runs in a Node environment (no jsdom). We do **not** test Svelte components with Vitest.
+- In-scope targets (100% on these is realistic):
+  - Hashing
+  - Sidecar parse/serialize
+  - Wikilink extractor
+  - Merge logic
+  - Retrieval math (cosine, ranking, chunk budgeting)
+  - Queue state machines
+- Out-of-scope:
+  - Svelte components / DOM
+  - End-to-end browser flows
+  - Real LLM inference quality (manual eval)
+  - Real Web Speech accuracy (manual check per browser)
 
-### Playwright — e2e
-- Headless Chromium (only target with full WebGPU + Web Speech in automation).
-- Smoke flows:
-  - First-run setup (auth flow mocked)
-  - Create note → sync → reopen
-  - Conflict simulation → resolution UI
-  - Chat turn end-to-end (LLM mocked for determinism)
-
-### Explicitly not tested
-- Real LLM inference quality (manual eval).
-- Real Web Speech accuracy (manual check on each target browser).
+### No UI testing framework for MVP
+- Playwright / Cypress / component-testing frameworks are **not** used.
+- UI correctness is verified manually during development + a launch-prep smoke pass across supported browsers.
+- Rationale: the UI surface is small (three tabs, one editor, one chat view), and the hard integrations (WebGPU, device flow, isomorphic-git) aren't amenable to reliable headless automation anyway. We'd spend more time wrestling test infra than preventing bugs.
+- Revisit post-MVP if the UI grows.
 
 ---
 
@@ -226,12 +234,35 @@ diff3                           ^0.x    (backup for merge edge cases)
 
 ### Dev
 ```
-typescript                      ^5
-vite                            (via SvelteKit)
-vitest                          ^1
-@playwright/test                ^1
-eslint / prettier               (standard Svelte configs)
+typescript                                  ^5
+vite                                        (via SvelteKit)
+svelte-check                                ^4
+vitest                                      ^2
+
+eslint                                      ^9
+typescript-eslint                           ^8     (strict + stylistic)
+eslint-plugin-svelte                        ^2
+eslint-plugin-import-x                      ^4
+eslint-plugin-unicorn                       ^55
+eslint-plugin-promise                       ^7
+
+prettier                                    ^3
+prettier-plugin-svelte                      ^3
+prettier-plugin-tailwindcss                 ^0.x
+
+npm-run-all2                                ^6
 ```
+
+### Quality gate — `npm run check`
+Single command, parallel, zero tolerance.
+```
+check        → run-p -lc check:*
+check:types  → svelte-check --fail-on-warnings
+check:lint   → eslint . --max-warnings=0
+check:format → prettier --check .
+check:test   → vitest run
+```
+No task in the implementation plan is considered complete until `npm run check` passes clean. Auto-fix helpers: `npm run fix` chains `eslint --fix` + `prettier --write`.
 
 ---
 
