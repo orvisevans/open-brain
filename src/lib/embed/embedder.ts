@@ -2,7 +2,14 @@
 // Phase 4 will expand this into the full Embedder with batching, chunking,
 // and hash-invalidation-aware sidecar writes.
 
-import { type FeatureExtractionPipeline, pipeline } from '@xenova/transformers';
+import { env, type FeatureExtractionPipeline, pipeline } from '@xenova/transformers';
+
+// Skip the same-origin /models/<id>/... probe. Transformers.js defaults to
+// checking the current origin before falling back to the Hugging Face CDN —
+// fine for projects that self-host ONNX weights, but we never will (HF CDN in
+// dev, dedicated mirror in prod). Leaving the default on spams the dev server
+// log with benign 404s on every first-time model load.
+env.allowLocalModels = false;
 
 // Lazily initialised — first call triggers model download.
 let embedder: FeatureExtractionPipeline | undefined;

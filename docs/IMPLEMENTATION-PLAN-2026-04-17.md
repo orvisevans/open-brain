@@ -36,46 +36,46 @@ After the skeleton is green, build vertically by feature, roughly in dependency 
 ## Phase 0 — Project scaffolding
 
 ### Project init
-- [ ] Initialize SvelteKit project (`npm create svelte@latest`); pick TypeScript, skip SSR-specific demo code
-- [ ] Configure SvelteKit for **static SPA mode**:
-    - [ ] Install `@sveltejs/adapter-static`
-    - [ ] `svelte.config.js`: set `adapter-static` with `fallback: 'index.html'`
-    - [ ] Root `+layout.ts`: `export const ssr = false; export const prerender = true;`
+- [x] Initialize SvelteKit project (`npm create svelte@latest`); pick TypeScript, skip SSR-specific demo code
+- [x] Configure SvelteKit for **static SPA mode**:
+    - [x] Install `@sveltejs/adapter-static`
+    - [x] `svelte.config.js`: set `adapter-static` with `fallback: 'index.html'`
+    - [x] Root `+layout.ts`: `export const ssr = false; export const prerender = true;`
 
 ### TypeScript — strict
-- [ ] `tsconfig.json` extends SvelteKit base and layers on the strictest reasonable flags:
-    - [ ] `"strict": true`
-    - [ ] `"noUncheckedIndexedAccess": true`
-    - [ ] `"noImplicitOverride": true`
-    - [ ] `"noFallthroughCasesInSwitch": true`
-    - [ ] `"noPropertyAccessFromIndexSignature": true`
-    - [ ] `"exactOptionalPropertyTypes": true`
-    - [ ] `"verbatimModuleSyntax": true`
-- [ ] `svelte-check` runs clean against `src/`
+- [x] `tsconfig.json` extends SvelteKit base and layers on the strictest reasonable flags:
+    - [x] `"strict": true`
+    - [x] `"noUncheckedIndexedAccess": true`
+    - [x] `"noImplicitOverride": true`
+    - [x] `"noFallthroughCasesInSwitch": true`
+    - [x] `"noPropertyAccessFromIndexSignature": true`
+    - [x] `"exactOptionalPropertyTypes": true`
+    - [x] `"verbatimModuleSyntax": true`
+- [x] `svelte-check` runs clean against `src/`
 
 ### Linting — extremely opinionated
-- [ ] ESLint flat config (`eslint.config.js`) composing:
-    - [ ] `typescript-eslint` — `strictTypeChecked` + `stylisticTypeChecked`
-    - [ ] `eslint-plugin-svelte` — recommended + `@typescript-eslint` integration
-    - [ ] `eslint-plugin-import-x` — `recommended`, `typescript`; enforce ordered imports + no cycles
-    - [ ] `eslint-plugin-unicorn` — `recommended`; keep the opinionated lints (naming, filename conventions) on
-    - [ ] `eslint-plugin-promise` — `recommended`
-- [ ] Explicitly enabled rules beyond the recommended sets:
-    - [ ] `@typescript-eslint/no-floating-promises`: error
-    - [ ] `@typescript-eslint/no-misused-promises`: error
-    - [ ] `@typescript-eslint/consistent-type-imports`: error
-    - [ ] `@typescript-eslint/strict-boolean-expressions`: error
-    - [ ] `@typescript-eslint/no-unnecessary-condition`: error
-    - [ ] `@typescript-eslint/switch-exhaustiveness-check`: error
-    - [ ] `import-x/no-cycle`: error (depth: 3)
-    - [ ] `import-x/order`: error (groups: builtin, external, internal, parent, sibling, index)
-    - [ ] `no-console`: error (allow `console.error`, `console.warn` only via `logError` helper)
-- [ ] `eslint --max-warnings=0` on the whole repo passes
-- [ ] No rule is set to `"off"` or `"warn"` unless the reason is noted in the Decision Log (§10)
+- [x] ESLint flat config (`eslint.config.js`) composing:
+    - [x] `typescript-eslint` — `strictTypeChecked` + `stylisticTypeChecked`
+    - [x] `eslint-plugin-svelte` — recommended + `@typescript-eslint` integration
+    - [x] `eslint-plugin-import-x` — `recommended`, `typescript`; enforce ordered imports + no cycles
+    - [x] `eslint-plugin-unicorn` — `recommended`; keep the opinionated lints (naming, filename conventions) on
+    - [x] `eslint-plugin-promise` — `recommended`
+- [x] Explicitly enabled rules beyond the recommended sets:
+    - [x] `@typescript-eslint/no-floating-promises`: error
+    - [x] `@typescript-eslint/no-misused-promises`: error
+    - [x] `@typescript-eslint/consistent-type-imports`: error
+    - [x] `@typescript-eslint/strict-boolean-expressions`: error
+    - [x] `@typescript-eslint/no-unnecessary-condition`: error
+    - [x] `@typescript-eslint/switch-exhaustiveness-check`: error
+    - [x] `import-x/no-cycle`: error (depth: 3)
+    - [x] `import-x/order`: error (groups: builtin, external, internal, parent, sibling, index)
+    - [x] `no-console`: error (allow `console.error`, `console.warn` only via `logError` helper)
+- [x] `eslint --max-warnings=0` on the whole repo passes
+- [x] No rule is set to `"off"` or `"warn"` unless the reason is noted in the Decision Log (§10)
 
 ### Formatting — Prettier, opinionated and locked
-- [ ] Install `prettier`, `prettier-plugin-svelte`, `prettier-plugin-tailwindcss`
-- [ ] `.prettierrc` with explicit, locked choices:
+- [x] Install `prettier`, `prettier-plugin-svelte`, `prettier-plugin-tailwindcss`
+- [x] `.prettierrc` with explicit, locked choices:
     ```json
     {
       "printWidth": 100,
@@ -91,26 +91,26 @@ After the skeleton is green, build vertically by feature, roughly in dependency 
       "plugins": ["prettier-plugin-svelte", "prettier-plugin-tailwindcss"]
     }
     ```
-- [ ] `.prettierignore` covers `build/`, `.svelte-kit/`, `dist/`, `node_modules/`, lockfiles
-- [ ] `prettier --check .` passes repo-wide
-- [ ] Editor config (`.editorconfig`) aligns with the above so IDEs don't fight Prettier
+- [x] `.prettierignore` covers `build/`, `.svelte-kit/`, `dist/`, `node_modules/`, lockfiles
+- [x] `prettier --check .` passes repo-wide
+- [x] Editor config (`.editorconfig`) aligns with the above so IDEs don't fight Prettier
 
 ### Testing — Vitest only (no UI tests)
-- [ ] Install `vitest`; configure for Node environment (no jsdom — we are not testing components)
-- [ ] Convention: **Vitest covers pure / functional modules only** — parsers, hashers, merge logic, retrieval math, queue state machines. UI is verified manually during implementation.
-- [ ] No Playwright / Cypress in this project. Component tests explicitly out of scope for MVP.
-- [ ] Add one placeholder test in `src/lib/__tests__/sanity.test.ts` that passes; confirms the runner works
+- [x] Install `vitest`; configure for Node environment (no jsdom — we are not testing components)
+- [x] Convention: **Vitest covers pure / functional modules only** — parsers, hashers, merge logic, retrieval math, queue state machines. UI is verified manually during implementation.
+- [x] No Playwright / Cypress in this project. Component tests explicitly out of scope for MVP.
+- [x] Add one placeholder test in `src/lib/__tests__/sanity.test.ts` that passes; confirms the runner works
 
 ### Tailwind 4
-- [ ] Install `tailwindcss` + `@tailwindcss/vite`
-- [ ] Wire Vite plugin in `vite.config.ts`
-- [ ] Add `@import "tailwindcss";` to root stylesheet
-- [ ] Define initial design tokens (`@theme`) from [DESIGN](./DESIGN-2026-04-17.md) §3 — placeholder hex values for `--bg`, `--fg`, `--accent`, `--border`, `--danger`, `--warn`, `--ok` in both light/dark
-- [ ] Set up `[data-theme]` + `prefers-color-scheme` CSS plumbing; no UI switcher yet
+- [x] Install `tailwindcss` + `@tailwindcss/vite`
+- [x] Wire Vite plugin in `vite.config.ts`
+- [x] Add `@import "tailwindcss";` to root stylesheet
+- [x] Define initial design tokens (`@theme`) from [DESIGN](./DESIGN-2026-04-17.md) §3 — placeholder hex values for `--bg`, `--fg`, `--accent`, `--border`, `--danger`, `--warn`, `--ok` in both light/dark
+- [x] Set up `[data-theme]` + `prefers-color-scheme` CSS plumbing; no UI switcher yet
 
 ### The `check` script
-- [ ] Install `npm-run-all2`
-- [ ] `package.json` scripts:
+- [x] Install `npm-run-all2`
+- [x] `package.json` scripts:
     ```json
     {
       "check": "run-p -lc check:*",
@@ -123,16 +123,16 @@ After the skeleton is green, build vertically by feature, roughly in dependency 
       "fix:format": "prettier --write ."
     }
     ```
-- [ ] `npm run check` passes clean on a fresh clone.
-- [ ] **This is the gate: no task below is considered done until `npm run check` passes.**
+- [x] `npm run check` passes clean on a fresh clone.
+- [x] **This is the gate: no task below is considered done until `npm run check` passes.**
 
 ### CI & deploy
-- [ ] GitHub Actions workflow (`.github/workflows/ci.yml`): on push + PRs, run `npm ci && npm run check && npm run build`
+- [x] GitHub Actions workflow (`.github/workflows/ci.yml`): on push + PRs, run `npm ci && npm run check && npm run build`
 - [ ] Deploy target picked and configured (default recommendation: **Cloudflare Pages**). Site reachable at a preview URL.
-- [ ] `README.md` at repo root: one-paragraph what-it-is + links to the docs
+- [x] `README.md` at repo root: one-paragraph what-it-is + links to the docs
 
 ### End of phase
-- [ ] `npm run check` green
+- [x] `npm run check` green
 - [ ] Tag commit `phase-0-complete`
 - [ ] Review Phase 1's tasks in light of what was learned during scaffolding; update this plan if anything changed (dep versions, script names, directory conventions)
 
@@ -143,38 +143,39 @@ After the skeleton is green, build vertically by feature, roughly in dependency 
 Goal: one running app that proves every hard integration works. Ugly is fine. No styling beyond defaults.
 
 ### Routing & shell
-- [ ] Three routes: `/chat`, `/browse`, `/memory`, plus `/setup`
-- [ ] Root layout with a tab bar (top desktop / bottom mobile — crude, unstyled OK)
-- [ ] Active tab highlights on current route
+- [x] Three routes: `/chat`, `/browse`, `/memory`, plus `/setup`
+- [x] Root layout with a tab bar (top desktop / bottom mobile — crude, unstyled OK)
+- [x] Active tab highlights on current route
 
 ### Auth (Device Flow)
-- [ ] Register a GitHub OAuth App (Device Flow enabled). Store `client_id` as a build-time constant (public, safe).
-- [ ] `auth/device-flow.ts`: POST device code, display `user_code` + open `verification_uri`, poll for token
-- [ ] On success: persist token to IndexedDB (`openbrain-auth` store, key `access_token`)
-- [ ] `/setup`: "Sign in with GitHub" button → runs the flow → shows current user login on success
+- [x] Register a GitHub **App** (Device Flow enabled; installation-scoped). Store `client_id` in `.env` as `VITE_GITHUB_CLIENT_ID` (public, safe to bundle). See §10 2026-04-22 for the OAuth App → GitHub App rationale.
+- [x] `auth/device-flow.ts`: POST device code, display `user_code` + open `verification_uri`, poll for token
+- [x] On success: persist token to IndexedDB (`openbrain-auth` store, key `access_token`)
+- [x] `/setup`: "Sign in with GitHub" button → runs the flow → shows current user login on success
+- [x] After sign-in, auto-resolve target repo from `/user/installations` (see `src/lib/auth/installations.ts`); collapse clone step when there's a single installed repo
 
 ### Sync (minimal)
-- [ ] Install `isomorphic-git` + `@isomorphic-git/lightning-fs`
-- [ ] `/setup`: input field for repo `owner/name`; button to clone into lightning-fs
-- [ ] On successful clone, list repo files in `/browse` as plain `<ul>`
+- [x] Install `isomorphic-git` + `@isomorphic-git/lightning-fs`
+- [x] `/setup`: input field for repo `owner/name`; button to clone into lightning-fs
+- [x] On successful clone, list repo files in `/browse` as plain `<ul>`
 
 ### LLM (minimal)
-- [ ] Install `@mlc-ai/web-llm`
-- [ ] `/setup`: "Load Gemma-1B" button → calls `CreateMLCEngine` with the smallest Gemma variant → shows load progress in status line
-- [ ] `/chat`: single `<input>` + `<button>`; on submit, call `engine.chat.completions.create` with streaming → append tokens to a `<pre>` element
+- [x] Install `@mlc-ai/web-llm`
+- [x] `/setup`: "Load Gemma-1B" button → calls `CreateMLCEngine` with the smallest Gemma variant → shows load progress in status line
+- [x] `/chat`: single `<input>` + `<button>`; on submit, call `engine.chat.completions.create` with streaming → append tokens to a `<pre>` element
 
 ### Embeddings (minimal)
-- [ ] Install `@xenova/transformers`
-- [ ] `/memory`: button "Embed a string" → embeds `"hello world"` using `all-MiniLM-L6-v2` → displays first 5 dimensions of the resulting vector
+- [x] Install `@xenova/transformers`
+- [x] `/memory`: button "Embed a string" → embeds `"hello world"` using `all-MiniLM-L6-v2` → displays first 5 dimensions of the resulting vector
 
 ### Status bar (minimal)
-- [ ] Monospace bar at the bottom of every page showing: auth state (logged-in user or `not signed in`), model load state, an online/offline dot
-- [ ] Uses `navigator.onLine` + listeners for offline state
+- [x] Monospace bar at the bottom of every page showing: auth state (logged-in user or `not signed in`), model load state, an online/offline dot
+- [x] Uses `navigator.onLine` + listeners for offline state
 
 ### Exit criteria
-- [ ] On a WebGPU-capable Chrome: sign in → clone a throwaway repo → load Gemma-1B → send one message and see tokens stream back → embed a string → see a vector. All without a reload.
-- [ ] `npm run check` green
-- [ ] Tag commit `walking-skeleton-green`
+- [x] On a WebGPU-capable Chrome: sign in → clone a throwaway repo → load Gemma-1B → send one message and see tokens stream back → embed a string → see a vector. All without a reload.
+- [x] `npm run check` green
+- [x] Tag commit `walking-skeleton-green`
 - [ ] Review Phase 2's tasks against what the skeleton revealed; update if any integration detail differed from the sketch
 
 ---
@@ -437,7 +438,8 @@ Run against [DESIGN](./DESIGN-2026-04-17.md). This is a pass, not a rebuild.
 - [ ] Performance: measure time-to-first-token and initial-clone time for a 100-note repo; document baseline
 - [ ] README: full user-facing getting-started
 - [ ] `CONTRIBUTING.md` (optional for MVP)
-- [ ] Register production GitHub OAuth App; swap `client_id` from dev to prod
+- [ ] Register production GitHub App; swap `VITE_GITHUB_CLIENT_ID` from dev to prod. Install on a production repo to verify the installation-discovery flow works end-to-end.
+- [ ] **Port the three same-origin proxies to the production host.** Dev uses Vite's `server.proxy` config; production needs serverless functions (Cloudflare Pages Functions or equivalent) at the same three paths: `/__gh/*` → `github.com/*`, `/__gh_api/*` → `api.github.com/*`, `/__gh_git/github.com/*` → `github.com/*`. No code in `src/` should need to change — the path prefixes are already in place. Verify via DevTools that every GitHub-bound request in production is same-origin.
 - [ ] Tag `v0.1.0-mvp` and deploy to production URL
 
 ### Exit criteria
@@ -457,6 +459,19 @@ Record non-obvious decisions made during implementation that future sessions sho
 - `2026-04-17` — `$app/*` and `$env/*` are SvelteKit virtual modules with no filesystem path; `import-x/resolver-next` (TypeScript resolver) cannot resolve them. Added `ignore: [String.raw\`^\$app/\`, String.raw\`^\$env/\`]` to `import-x/no-unresolved` globally.
 - `2026-04-17` — isomorphic-git is imported via named exports (`clone`, `listFiles`) rather than the default export to satisfy `import-x/no-named-as-default-member`.
 - `2026-04-17` — `LightningFS.FS` satisfies isomorphic-git's `CallbackFsClient` structurally (all callback-style methods match). No type assertion needed. Verified by TypeScript passing without warnings.
+- `2026-04-17` — ESLint rule disables, enumerated for policy compliance (the plan requires every `off`/`warn` to have a Decision Log entry):
+  - `unicorn/no-useless-undefined`: `off` for `**/*.svelte` and `**/*.svelte.ts`. Svelte 5's generated/runtime patterns use explicit `undefined` in places this rule flags but the author cannot refactor.
+  - `@typescript-eslint/no-unused-expressions`: `off` for `src/**/*.{test,spec}.ts`. Some assertion shapes register as unused-expressions to the base rule; Vitest idioms would be unreadable if refactored to satisfy it.
+  - `import-x/no-named-as-default` / `import-x/no-named-as-default-member`: `off` for root JS config files (`*.config.{js,mjs,cjs}`, `svelte.config.js`, `eslint.config.js`). `typescript-eslint` and `eslint-plugin-import-x` deliberately ship both a default and identically-named named exports — their own docs use the `import pkg from 'pkg'; pkg.configs.x` pattern these rules flag.
+- `2026-04-17` — `check:types` runs `svelte-kit sync && svelte-check ...`, a superset of the plan's original snippet. `svelte-kit sync` is required on fresh clones (and after route changes) to regenerate `.svelte-kit/ambient.d.ts`; without it `$app/*` and `$env/*` imports fail type-checking. Functionally equivalent behaviour to the snippet, with a stability fix.
+- `2026-04-17` — ~~**CORS / GitHub proxy via `cors.isomorphic-git.org`.**~~ Superseded by the 2026-04-22 entry below; kept for history. (Original approach relied on a third-party proxy that 403'd the OAuth device-flow endpoints — those are not on its allowlist.)
+- `2026-04-22` — **GitHub auth reworked end-to-end.** Four coordinated changes, all driven by actually wiring up the skeleton's sign-in + clone path and finding the 2026-04-17 plan's assumptions off:
+  1. **OAuth App → GitHub App.** The plan originally specified an OAuth App with `repo` scope. Switched to a GitHub App (`client_id` prefix `Iv23li…`) because it is installation-scoped: the user selects a specific repo to install on, and the resulting user access token can only reach that repo. This is both a security win (blast radius ≈ one repo instead of "every repo the user can touch") and a UX win — after sign-in we read `GET /user/installations{/id}/repositories` and auto-resolve the notes repo, collapsing step 2 of setup when there is exactly one installation. New helper at `src/lib/auth/installations.ts`. Device-flow request no longer sends an OAuth `scope` param (GitHub Apps derive permissions from the installation, not scopes).
+  2. **Third-party proxy → same-origin Vite proxy.** The `cors.isomorphic-git.org` public proxy only allowlists git smart-HTTP paths (`/info/refs`, `/git-upload-pack`, `/git-receive-pack`) and returns 403 on OAuth device-flow preflights. Replaced with three same-origin prefixes in `vite.config.ts`: `/__gh` → `github.com` (device flow), `/__gh_api` → `api.github.com` (installations), `/__gh_git` → `github.com` (git smart-HTTP). Production will mirror these as serverless functions in Phase 11 — the prefix scheme was chosen to make that a drop-in swap.
+  3. **Git auth: `Authorization: token <pat>` → `onAuth` HTTP Basic.** The plan's snippet used `headers: { Authorization: 'token ${token}' }`. That form is for the REST API; git smart-HTTP rejects it with 401. isomorphic-git's `onAuth: () => ({ username: 'x-access-token', password: token })` constructs HTTP Basic auth, which is what git-over-HTTPS expects. (GitHub smart-HTTP always 401s the first unauth `/info/refs`, then the client retries with Basic — this is the protocol, not a bug.)
+  4. **`Buffer` polyfill for browser.** isomorphic-git 1.37.x uses Node's `Buffer` global in ~40 places (index serialization, tree writes, SHA-1 hex↔binary). Upstream expects consumers to polyfill `Buffer` in browsers. Added `src/lib/polyfills.ts` which assigns `globalThis.Buffer` from the `buffer` npm package, and `src/lib/sync/git.ts` side-effect-imports it before its isomorphic-git imports.
+
+  Net effect: sign-in + clone both work same-origin, with per-repo-scoped tokens, and no third-party host in the auth/sync path. §11 blocker removed.
 
 ---
 
@@ -464,7 +479,7 @@ Record non-obvious decisions made during implementation that future sessions sho
 
 Track things that might require a plan revision.
 
-- _(empty — add entries as work progresses)_
+- ~~**CORS proxy for GitHub traffic is a third-party public endpoint.**~~ Resolved 2026-04-22 — see §10. All GitHub traffic now goes through same-origin Vite proxies (`/__gh`, `/__gh_api`, `/__gh_git`). Phase 11 production work is to replicate the same three proxy routes as serverless functions on the deploy target; no token or clone payload transits a third-party host in dev or prod.
 
 ---
 

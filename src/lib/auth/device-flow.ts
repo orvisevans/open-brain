@@ -1,9 +1,17 @@
-// GitHub OAuth Device Flow implementation.
-// Reference: https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#device-flow
-
-const DEVICE_CODE_URL = 'https://github.com/login/device/code';
-const TOKEN_URL = 'https://github.com/login/oauth/access_token';
-const SCOPE = 'repo';
+// GitHub App Device Flow implementation.
+// Reference: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app#using-the-device-flow-to-generate-a-user-access-token
+//
+// CORS note: github.com's device-flow endpoints do not set Access-Control-Allow-Origin,
+// so a browser SPA cannot call them directly. We route requests through a same-origin
+// `/__gh` prefix which is proxied to github.com — by Vite in dev (see vite.config.ts),
+// and by a first-party serverless function in production (Phase 11).
+// See IMPLEMENTATION-PLAN §10 Decision Log + §11 Known Blockers.
+//
+// Note: we request no OAuth `scope`. GitHub App user access tokens derive their
+// permissions from the App's installation on each repo; scopes are ignored.
+const GH_PROXY_PREFIX = '/__gh';
+const DEVICE_CODE_URL = `${GH_PROXY_PREFIX}/login/device/code`;
+const TOKEN_URL = `${GH_PROXY_PREFIX}/login/oauth/access_token`;
 
 // How many seconds to wait between polls when GitHub returns slow_down.
 const SLOW_DOWN_EXTRA_SECONDS = 5;
@@ -26,7 +34,7 @@ async function requestDeviceCode(clientId: string): Promise<DeviceCodeResponse> 
   const response = await fetch(DEVICE_CODE_URL, {
     method: 'POST',
     headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ client_id: clientId, scope: SCOPE }),
+    body: JSON.stringify({ client_id: clientId }),
   });
 
   if (!response.ok) {
@@ -61,12 +69,12 @@ function delay(seconds: number): Promise<void> {
 }
 
 /**
- * Runs the full GitHub Device Flow.
+ * Runs the full GitHub App Device Flow.
  *
- * @param clientId     GitHub OAuth App client_id (public, safe to bundle).
+ * @param clientId     GitHub App client_id (public, safe to bundle; `Iv23li…` prefix).
  * @param onCode       Called once the device code is ready; show userCode to the user
  *                     and open verificationUri in a new tab.
- * @returns            The access token once the user has authorised the device.
+ * @returns            The user access token once the user has authorised the app.
  */
 export async function runDeviceFlow(
   clientId: string,
