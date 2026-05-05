@@ -62,14 +62,6 @@ export default defineConfig({
       { find: /^isomorphic-git$/, replacement: isomorphicGitEsm },
     ],
   },
-  // Tell Vite's pre-bundler not to optimise isomorphic-git: when it does,
-  // it pre-builds the package once and caches it in node_modules/.vite
-  // BEFORE the alias is applied, so the cached chunk still contains the
-  // CJS build. Excluding it forces request-time resolution, which goes
-  // through the alias.
-  optimizeDeps: {
-    exclude: ['isomorphic-git'],
-  },
   server: {
     proxy: {
       // api.github.com → installation / user lookups (installations.ts).
