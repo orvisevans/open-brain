@@ -1,11 +1,12 @@
 <script lang="ts">
-  import debounce from 'just-debounce-it';
   import { page } from '$app/state';
 
   import Editor from '$lib/browse/Editor.svelte';
   import { logError } from '$lib/log';
   import { syncEngine } from '$lib/sync';
   import { vault, type NotePath } from '$lib/vault';
+
+  const AUTOSAVE_DEBOUNCE_MS = 3000;
 
   // Active note path comes from the [...path] dynamic segment. Cast through
   // unknown because $app/state types `params` as Record<string, string> but
@@ -21,6 +22,44 @@
   let loadError = $state<string | undefined>(undefined);
   let notesList = $state<NotePath[]>([]);
 
+  // Pending autosave bookkeeping. We deliberately don't use just-debounce-it:
+  // we need to be able to FLUSH the pending save before navigating away from
+  // a note, and that package's debounced function exposes no flush hook.
+  // `pendingSave` always points at the most recent unsaved (path, content)
+  // pair, regardless of which note is currently displayed.
+  let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  let pendingSave: { path: NotePath; content: string } | undefined;
+
+  function scheduleSave(forPath: NotePath, next: string): void {
+    pendingSave = { path: forPath, content: next };
+    if (saveTimer !== undefined) {
+      globalThis.clearTimeout(saveTimer);
+    }
+    saveTimer = globalThis.setTimeout(() => {
+      saveTimer = undefined;
+      void flushSave();
+    }, AUTOSAVE_DEBOUNCE_MS);
+  }
+
+  async function flushSave(): Promise<void> {
+    if (saveTimer !== undefined) {
+      globalThis.clearTimeout(saveTimer);
+      saveTimer = undefined;
+    }
+    const job = pendingSave;
+    if (job === undefined) return;
+    pendingSave = undefined;
+    try {
+      await vault.writeNote(job.path, job.content);
+      // Only update the visible status if we're still looking at this note —
+      // otherwise a "saved" badge would flash for the new note.
+      if (path === job.path) saveStatus = 'saved';
+    } catch (error: unknown) {
+      logError('browse-detail/save', { path: job.path, error });
+      if (path === job.path) saveStatus = 'error';
+    }
+  }
+
   // Refresh the autocomplete list when the active note changes.
   $effect(() => {
     void path;
@@ -33,7 +72,9 @@
     })();
   });
 
-  // Load the note whenever the active path changes.
+  // Load the note whenever the active path changes. If a save is pending for
+  // a different note, flush it FIRST so the user's edits never go missing
+  // when they switch notes within the autosave window.
   $effect(() => {
     const current = path;
     if (current === undefined) return;
@@ -44,6 +85,9 @@
 
     void (async () => {
       try {
+        if (pendingSave !== undefined && pendingSave.path !== current) {
+          await flushSave();
+        }
         // Use readRaw so the editor displays the file verbatim (including
         // any YAML frontmatter block) rather than the body-only view.
         content = await vault.readRaw(current);
@@ -56,31 +100,20 @@
     })();
   });
 
-  // Debounced autosave — ~3s idle after last keystroke per IMPLEMENTATION-PLAN.
-  // Recreate the debounced function whenever the path changes so a pending
-  // save from the previous note doesn't write to the new one.
-  const persist = $derived.by(() => {
-    const current = path;
-    if (current === undefined) {
-      return (): void => {
-        // No active note yet — discard the value rather than save it somewhere.
-      };
-    }
-    return debounce(async (next: string): Promise<void> => {
-      try {
-        await vault.writeNote(current, next);
-        saveStatus = 'saved';
-      } catch (error: unknown) {
-        logError('browse-detail/save', { path: current, error });
-        saveStatus = 'error';
-      }
-    }, 3000);
+  // Flush any pending save when the page unmounts (e.g. user navigates away
+  // from /browse entirely).
+  $effect(() => {
+    return () => {
+      void flushSave();
+    };
   });
 
   function handleChange(next: string): void {
+    const current = path;
+    if (current === undefined) return;
     content = next;
     saveStatus = 'pending';
-    persist(next);
+    scheduleSave(current, next);
   }
 
   function getNotes(): readonly NotePath[] {
