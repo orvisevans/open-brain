@@ -104,25 +104,21 @@
           '.cm-scroller': { fontFamily: 'inherit' },
           '.cm-content': {
             padding: '0.75rem',
-            // CodeMirror suppresses the native caret and draws its own
-            // .cm-cursor div on top. caretColor is normally inherited; pin
-            // it transparent so legacy browsers don't show a duplicate.
-            caretColor: 'transparent',
+            // We deliberately do NOT include CodeMirror's `drawSelection`
+            // extension, so the cursor is the native browser caret on the
+            // contenteditable. Pin caretColor to the accent so it's
+            // visible on the dark theme.
+            caretColor: 'var(--color-accent)',
           },
           '&.cm-focused': { outline: 'none' },
-          // Primary cursor: explicit color so it's visible on dark themes
-          // (CodeMirror's default is `black` and disappears on dark bg).
+          // .cm-dropCursor (for drag-and-drop drop indicator) and any
+          // .cm-cursor produced by drawSelection later still get a
+          // contrasting color if those extensions get added in future.
           '.cm-cursor, .cm-dropCursor': {
             borderLeftColor: 'var(--color-accent)',
             borderLeftWidth: '2px',
           },
-          '&.cm-focused .cm-cursor': {
-            borderLeftColor: 'var(--color-accent)',
-          },
-          '.cm-selectionBackground, ::selection': {
-            backgroundColor: 'rgba(34, 211, 238, 0.25)',
-          },
-          '&.cm-focused .cm-selectionBackground': {
+          '::selection': {
             backgroundColor: 'rgba(34, 211, 238, 0.35)',
           },
         }),
