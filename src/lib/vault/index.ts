@@ -1,6 +1,7 @@
 // Public Vault API. Production callers import from `$lib/vault`; tests
 // instantiate `createVault` directly with an in-memory FsLike shim.
 
+import { syncEngine } from '../sync';
 import { fs as sharedFs } from '../sync/git';
 
 import type { FsLike } from './fs-like';
@@ -20,4 +21,11 @@ export type { Vault, VaultOptions } from './vault';
 // into our module's public surface.
 const promisesFs = sharedFs.promises as unknown as FsLike;
 
-export const vault: Vault = createVault(promisesFs);
+export const vault: Vault = createVault(promisesFs, {
+  // Notify the sync engine on every successful write so the debounced
+  // commit/push pipeline picks the path up. See IMPLEMENTATION-PLAN
+  // 2026-05-05 §10 entry on the vault → sync notification mechanism.
+  onChange: (path) => {
+    syncEngine.notifyChange(path);
+  },
+});

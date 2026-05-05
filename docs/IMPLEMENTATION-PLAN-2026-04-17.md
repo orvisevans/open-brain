@@ -233,39 +233,38 @@ Spec tightened post-Phase-2 review. Decisions captured below; rationale in §10 
 
 The existing `src/lib/sync/git.ts` ships `cloneRepository()` only; Phase 3 adds the rest of the smart-HTTP surface. All ops share the same plumbing — extract a helper rather than copy-pasting `corsProxy: '/__gh_git'` + `onAuth: …` into each call site.
 
-- [ ] `withGitDefaults(token: string)` helper inside `git.ts` that returns the common isomorphic-git options (`fs`, `http`, `dir: '/repo'`, `corsProxy: '/__gh_git'`, `onAuth`). Every new op (`commit`, `push`, `pull`, `status`, `add`) builds on it.
-- [ ] `add(paths: NotePath[])` wrapper — stages files via `git.add` (per-path call; batched).
-- [ ] `commit(paths: NotePath[], message: string)` wrapper. Author defaults to `{ name: auth.user ?? 'open-brain', email: 'noreply@open-brain.local' }` — see Decision Log. `message` defaults to `'open-brain: sync <ISO timestamp>'` when caller passes none.
-- [ ] `push()` — uses `onAuth` for HTTP Basic; targets `refs/heads/main` (default GitHub branch for new repos). Document in Decision Log; revisit if a user reports `master`-only repos failing.
-- [ ] `pull()` — fetch + merge. `singleBranch: true` to keep the working FS minimal. Merges return one of three outcomes consumed by the conflict tier dispatcher.
-- [ ] `status(): Promise<{ path: NotePath; state: 'modified' | 'untracked' | 'deleted' }[]>` — wraps `git.statusMatrix` and projects it to the small shape we actually need.
-- [ ] `SyncEngine` class in `src/lib/sync/engine.ts` exposing `SyncStatus` (per [ARCHITECTURE §3](./ARCHITECTURE-2026-04-17.md)) via a module-level `$state` rune (mirrors `state.svelte.ts` conventions).
-- [ ] **Vault → Sync change notification.** Extend `createVault(fs, options)` to accept `options.onChange?: (path: NotePath) => void`. The production wiring in `src/lib/vault/index.ts` injects a callback that calls `syncEngine.notifyChange(path)`. Tests still pass nothing.
-- [ ] **Debounce:** SyncEngine debounces **from the last vault `onChange` call**, not from last keystroke. Editor's 3s + Sync's 5s stack on purpose: the cap on time-to-GitHub for a fresh edit is ~8s. Document the budget; do not collapse the debounces.
-- [ ] During the debounce window, accumulate changed paths in a Set. On window expiry: stage all → commit single squashed commit → push.
-- [ ] Status bar wires to `SyncStatus`: `▲ synced Xs ago` / `◆ N pending` / `○ offline` / `◇ syncing`. Add a fourth segment to `+layout.svelte`'s status bar (currently auth | model | network).
+- [x] `gitDefaults(token?)` helper inside `git.ts` returns the common isomorphic-git options (`fs`, `http`, `dir: '/repo'`, `corsProxy: '/__gh_git'`, `onAuth`). Every smart-HTTP op (`clone`, `push`, `pull`) builds on it. Renamed from the plan's `withGitDefaults` because the helper composes by spread (`...gitDefaults(token)`), so the verb-first name read awkwardly.
+- [x] `gitOps.stage(paths)` — per-path `git.add` for present files, `git.remove` for paths whose workdir vanished (deletion). Inferred from `statusMatrix` rather than stat-ing the FS twice.
+- [x] `gitOps.commit(message, author)` — message format: `'open-brain: sync <ISO>'`. Author defaults documented below in Decision Log.
+- [x] `gitOps.push(token)` — pushes `refs/heads/main`. Document in Decision Log; revisit if a user reports `master`-only repos failing.
+- [x] `gitOps.pull(token, author)` — fetch + merge with `abortOnConflict: false` so conflict markers land in working files for tier 2's UI. Returns a typed `PullResult` (`up-to-date | fast-forward | merged | conflict | error`) so the engine can dispatch.
+- [x] `gitOps.changedPaths()` — wraps `statusMatrix` and returns paths whose workdir state differs from HEAD. (Plan's `status()` shape was over-specified; the engine only needs the paths.)
+- [x] `SyncEngine` in `src/lib/sync/engine.ts`. Exposes `status: { value: SyncStatus }` and `subscribe(listener)`. The plan asked for a Svelte rune; I used a plain reactive container so the engine can be unit-tested in pure Node without the Svelte compiler. The layout adapts the subscription into a local `$state` for reactivity.
+- [x] **Vault → Sync change notification** via the `VaultOptions.onChange` hook. Production wiring in `src/lib/vault/index.ts` injects `syncEngine.notifyChange`; tests pass nothing.
+- [x] **Debounce stacking is intentional.** Editor's 3s autosave + Sync's 5s commit window = ~8s max time-from-keystroke-to-GitHub. Each layer's "idle" detection serves a different purpose; collapsing into one would couple them.
+- [x] During the debounce window, paths accumulate in a `Set<NotePath>`. On expiry: stage all → single commit → push. Failures re-queue; signed-out and offline states park changes safely.
+- [x] **Status bar 4th segment** for sync. `▲ synced Xs ago` / `◆ N pending` / `◇ syncing (phase)` / `! conflict (N)` / `○ offline (N queued)` / `! sync error`. Auth segment now `flex: 0` so the longer sync label doesn't push it off-screen.
+- [x] **Periodic pull** lives in the root layout (`+layout.svelte`), not the engine itself, because the engine is timer-agnostic for testability. Layout pulls on mount, every 30s, and on `online` events.
 
 ### Conflict resolution — three tiers
 
-Tier 2's "resolver UI" was hand-wavy; concretized below.
-
-- [ ] **Tier 1:** 3-way auto-merge via isomorphic-git's merge driver on pull. On clean merge, push the merge commit immediately.
-- [ ] **Tier 2:** Detect overlap → isomorphic-git writes conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) into the affected files → emit `{ kind: "conflict", paths }` on `SyncStatus`.
-    - [ ] Resolver UI: render conflict markers **inline in the existing CodeMirror editor** as decorated regions with a small overlay button group (`keep ours` / `keep theirs` / `edit manually`) per hunk. Avoid a separate diff route — keep the user in the editor they already have open. New extension at `src/lib/browse/conflict-overlay.ts`.
-    - [ ] On resolve action, mutate the document to remove the markers, save through the vault, and commit. SyncEngine pushes on the next debounce cycle.
-- [ ] **Tier 3:** On merge-engine failure (i.e., isomorphic-git throws), write `<path>.conflict-<ISO>.md` with the local version, take remote as canonical for `<path>`, commit both, surface a toast (toast component is Phase 9 — for Phase 3 use a banner in the status bar).
+- [x] **Tier 1:** 3-way auto-merge via isomorphic-git on pull. On `merged` (no user-visible conflicts), the engine clears stale conflicts and resumes idle.
+- [x] **Tier 2:** Overlap detected → isomorphic-git writes diff3 markers into the working files → engine emits `{ kind: 'conflict', paths }`.
+    - [x] Resolver UI: inline CodeMirror extension at `src/lib/browse/conflict-overlay.ts` parses `<<<<<<< / ======= / >>>>>>>` (with optional `||||||| base` for diff3), decorates each hunk, and renders a `keep ours` / `keep theirs` button pair per hunk via a `WidgetType` block decoration.
+    - [x] On click, the document is mutated to remove the markers, the page persists through the vault (skipping the 3s autosave debounce — conflicts are urgent), and `syncEngine.markResolved(path)` re-queues the file for commit/push.
+    - [x] Manual editing still works: deleting markers by hand removes the decoration on the next document update.
+- [ ] **Tier 3:** Deferred. The plan called for auto-writing `<path>.conflict-<ISO>.md` backups + resetting workdir to remote + replaying. Implementing the destructive reset/replay safely without browser-level testing on a real `MergeNotSupportedError` is too risky for the scope of this commit. The engine surfaces tier 3 as `{ kind: 'error', message: 'merge-engine failure — please re-clone the repo to recover' }`. See Decision Log §10 (2026-05-05 Phase 3 deferred items).
 
 ### Testing
 
-Vitest cannot drive a real GitHub remote. Split the test surface explicitly:
-
-- [ ] **Unit tests** (Vitest): SyncEngine queue/debounce state machine, conflict-tier dispatcher, `status()` projection. Mock at the `git.ts` wrapper layer — define `GitOps` interface, inject a fake. Do NOT mock isomorphic-git itself (too large, too many entry points).
-- [ ] **Manual e2e** (browser): two-profile editing; offline → online resume; conflict-tier-2 happy path. Capture results in this section as checked boxes when verified.
+- [x] **Unit tests** (Vitest): 11 SyncEngine tests at `src/lib/sync/__tests__/engine.test.ts` covering debounce coalescing, timer reset on new changes, status sequence emission, flush(), offline + signed-out gates, push-failure retry, pull conflict + clean-merge transitions, and markResolved re-queueing. The test harness uses a `FakeClock` and a `FakeGitOps` (also at `src/lib/sync/__tests__/fake-git-ops.ts`) — no isomorphic-git involvement.
+- [x] 5 conflict-parser tests at `src/lib/browse/__tests__/conflict.test.ts` cover the marker-parser + resolveHunk function for both diff3 and standard markers.
+- [ ] **Manual e2e** (browser): two-profile editing; offline → online resume; conflict-tier-2 happy path. Capture results here as checked boxes when verified.
 
 ### Exit criteria
-- [ ] Edits sync to GitHub automatically.
-- [ ] Editing the same note on two devices (simulate via two browser profiles) results in: auto-merge if non-overlapping; resolver UI if overlapping; backup file if the engine blows up.
-- [ ] `npm run check` green
+- [ ] Edits sync to GitHub automatically. _(Pending manual browser verification.)_
+- [ ] Editing the same note on two devices results in: auto-merge if non-overlapping; resolver UI if overlapping; clear error if the engine blows up. _(Pending manual browser verification.)_
+- [x] `npm run check` green
 - [ ] Review Phase 4's tasks against what you learned about sync timing and conflict flows; update queue/debounce assumptions if they clash with reality
 
 ---
@@ -517,6 +516,15 @@ Record non-obvious decisions made during implementation that future sessions sho
   5. **Test split:** Vitest unit-tests at the `GitOps` wrapper layer (mock `git.ts`'s public functions, not isomorphic-git itself); browser-driven manual e2e for real network. The `git.ts` wrapper becomes the seam for both.
   6. **Conflict resolver UI lives in the existing CodeMirror editor**, not a separate diff route. New extension `conflict-overlay.ts` decorates `<<<<<<< / ======= / >>>>>>>` ranges and renders inline action buttons. Keeps users in the file they already opened.
   7. **Status bar gets a 4th segment** for sync (`▲ synced 4s ago` etc). Did not fold sync into the network dot — they convey orthogonal information (you can be online but mid-conflict; offline but with no pending changes).
+- `2026-05-05` — **Phase 3 implementation notes (deltas from the spec).**
+  1. **`SyncStatus` carries inline data per kind** (`pending`/`offline` carry `pendingPaths`, `idle` carries `lastSyncAt`, `conflict` carries `paths`, `error` carries `message`). The architecture sketch §3 had a thinner shape; the engine's status-bar rendering needs the data so the UI doesn't have to reach back into the engine for it.
+  2. **`SyncEngine.status` is a plain reactive container** (`{ value: SyncStatus }`), not a Svelte rune. The engine is unit-tested in pure Node without the Svelte compiler; consumers (the layout) subscribe and adapt the value into their own `$state`.
+  3. **The vault → sync circular import was broken by importing `NotePath` from `$lib/vault/types`** (the leaf module) instead of `$lib/vault` (the barrel that wires the production vault to the engine). Type-only imports through the barrel still confused TypeScript at import resolution.
+  4. **`vitest.config.ts` got a `$lib` resolver alias.** SvelteKit's vite plugin sets it up for dev/build but vitest doesn't pick it up automatically. Mirrored to `src/lib`.
+  5. **Periodic pull lives in the layout, not the engine.** Keeps the engine timer-agnostic and unit-testable. Layout pulls on mount, every 30s, and on `online` events. `online` also flushes the pending commit queue.
+  6. **Tier 3 conflict recovery is deferred.** The auto-reset workdir + replay flow is destructive enough that I'm not comfortable shipping it without browser-level verification on a real `MergeNotSupportedError`. The engine surfaces the failure as a clear error instructing the user to re-clone. Tier 3 backup-only logic is filed in §13 (post-MVP backlog) for follow-up.
+  7. **`abortOnConflict: false` on `pull`** is documented in isomorphic-git's docs but missing from its `.d.ts` (the type only lists it on `merge`). Used `@ts-expect-error` with a comment pointing at the upstream gap; remove when isomorphic-git ships an updated typings.
+  8. **Tier 2 resolver re-parses the live document on click** rather than trusting the cached `ConflictHunk` offsets. Between paint and click, another resolution may have shifted the offsets — re-parsing is cheap (≤ a few KB) and avoids bugs from stale offsets.
 
 ---
 
@@ -549,6 +557,7 @@ Already covered in [CONSTRAINTS §11](./CONSTRAINTS-2026-04-17.md), restated so 
 
 Filed here so ideas that surface during MVP work don't get lost.
 
+- [ ] Tier 3 conflict auto-recovery (write `<path>.conflict-<ISO>.md` backup, reset workdir to remote, replay). Deferred from Phase 3 because the destructive reset/replay needs browser-level testing on a real `MergeNotSupportedError`. See §10 2026-05-05 Phase 3 entry.
 - [ ] Whisper transcription as a privacy/accuracy mode
 - [ ] Voice output for conversational chat
 - [ ] Rich markdown preview

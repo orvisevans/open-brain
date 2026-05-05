@@ -4,6 +4,7 @@
 
   import Editor from '$lib/browse/Editor.svelte';
   import { logError } from '$lib/log';
+  import { syncEngine } from '$lib/sync';
   import { vault, type NotePath } from '$lib/vault';
 
   // Active note path comes from the [...path] dynamic segment. Cast through
@@ -85,6 +86,25 @@
   function getNotes(): readonly NotePath[] {
     return notesList;
   }
+
+  // The user clicked "keep ours" or "keep theirs" on a conflict hunk in the
+  // editor. Persist the resolved content immediately (skipping the 3s
+  // autosave debounce — conflicts are urgent) and tell the SyncEngine the
+  // file is no longer in conflict so it can re-enter the commit/push flow.
+  function handleResolveConflict(next: string): void {
+    const current = path;
+    if (current === undefined) return;
+    void (async () => {
+      try {
+        await vault.writeNote(current, next);
+        syncEngine.markResolved(current);
+        saveStatus = 'saved';
+      } catch (error: unknown) {
+        logError('browse-detail/resolve-conflict', { path: current, error });
+        saveStatus = 'error';
+      }
+    })();
+  }
 </script>
 
 <div class="detail">
@@ -107,7 +127,12 @@
     <p class="error-msg">{loadError}</p>
   {:else}
     <div class="editor-shell">
-      <Editor value={content} onChange={handleChange} notes={getNotes} />
+      <Editor
+        value={content}
+        onChange={handleChange}
+        notes={getNotes}
+        onResolveConflict={handleResolveConflict}
+      />
     </div>
   {/if}
 </div>

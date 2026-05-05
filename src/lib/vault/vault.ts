@@ -25,6 +25,10 @@ export interface Vault {
 export interface VaultOptions {
   repoDirectory?: string;
   notesDirectory?: string;
+  // Notified after a successful `writeNote`. The SyncEngine subscribes via
+  // this hook in production; tests omit it. Errors during the callback are
+  // logged but do not propagate — sync notification is best-effort.
+  onChange?: (path: NotePath) => void;
 }
 
 const DEFAULT_REPO_DIRECTORY = '/repo';
@@ -67,6 +71,13 @@ export function createVault(fs: FsLike, options: VaultOptions = {}): Vault {
     } catch (error: unknown) {
       logError('vault/write-note', { path, error });
       throw error;
+    }
+    if (options.onChange !== undefined) {
+      try {
+        options.onChange(path);
+      } catch (error: unknown) {
+        logError('vault/on-change', { path, error });
+      }
     }
   }
 

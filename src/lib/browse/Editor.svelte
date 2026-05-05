@@ -12,15 +12,18 @@
   import { EditorState } from '@codemirror/state';
   import { EditorView, keymap } from '@codemirror/view';
 
+  import { conflictOverlay } from './conflict-overlay';
   import { wikilinkCompletion, type NotePathProvider } from './wikilink-completion';
 
   interface Properties {
     value: string;
     onChange: (next: string) => void;
     notes: NotePathProvider;
+    /** Called when the user picks "keep ours / keep theirs" on a conflict hunk. */
+    onResolveConflict?: (next: string) => void;
   }
 
-  const { value, onChange, notes }: Properties = $props();
+  const { value, onChange, notes, onResolveConflict }: Properties = $props();
 
   let host = $state<HTMLDivElement | undefined>(undefined);
   let view: EditorView | undefined;
@@ -29,7 +32,7 @@
     if (host === undefined) return;
 
     view = new EditorView({
-      state: createState(value, onChange, notes),
+      state: createState(value, onChange, notes, onResolveConflict),
       parent: host,
     });
 
@@ -53,6 +56,7 @@
     initial: string,
     onChangeCallback: (next: string) => void,
     notesProvider: NotePathProvider,
+    onResolveConflictCallback: ((next: string) => void) | undefined,
   ): EditorState {
     return EditorState.create({
       doc: initial,
@@ -62,6 +66,15 @@
         search(),
         markdown(),
         wikilinkCompletion(notesProvider),
+        conflictOverlay((next) => {
+          // Replace the document so the user sees the resolution immediately,
+          // and propagate the change up to the page so it can write through
+          // the vault.
+          view?.dispatch({
+            changes: { from: 0, to: view.state.doc.length, insert: next },
+          });
+          onResolveConflictCallback?.(next);
+        }),
         EditorView.lineWrapping,
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {

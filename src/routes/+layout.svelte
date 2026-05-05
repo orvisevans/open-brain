@@ -4,6 +4,7 @@
 
   import { logError } from '$lib/log';
   import { auth, model, network, repo } from '$lib/state.svelte';
+  import { syncEngine, type SyncStatus } from '$lib/sync';
   import { getStoredRepo } from '$lib/sync/repo-storage';
   import '../app.css';
 
@@ -52,6 +53,65 @@
     return page.url.pathname === path || page.url.pathname.startsWith(`${path}/`);
   }
 
+  // Live sync status — subscribed once, surfaced through this rune so the
+  // status bar re-renders on every transition. The engine emits its current
+  // value synchronously on subscribe, so `syncStatus` is initialised before
+  // the first paint.
+  let syncStatus = $state<SyncStatus>(syncEngine.status.value);
+  $effect(() => {
+    return syncEngine.subscribe((next) => {
+      syncStatus = next;
+    });
+  });
+
+  // Drive a periodic pull so a second device's edits land within ~30s. We
+  // also pull immediately on mount and whenever the network flips back to
+  // online.
+  $effect(() => {
+    void syncEngine.pull();
+
+    const intervalId = globalThis.setInterval(() => {
+      void syncEngine.pull();
+    }, 30_000);
+
+    const handleOnline = () => {
+      void syncEngine.pull();
+      void syncEngine.flush();
+    };
+    globalThis.addEventListener('online', handleOnline);
+
+    return () => {
+      globalThis.clearInterval(intervalId);
+      globalThis.removeEventListener('online', handleOnline);
+    };
+  });
+
+  const syncStatusLabel = $derived.by(() => {
+    const status = syncStatus;
+    switch (status.kind) {
+      case 'idle': {
+        if (status.lastSyncAt === undefined) return '▲ idle';
+        const seconds = Math.max(0, Math.round((Date.now() - status.lastSyncAt) / 1000));
+        return `▲ synced ${String(seconds)}s ago`;
+      }
+      case 'pending': {
+        return `◆ ${String(status.pendingPaths.length)} pending`;
+      }
+      case 'syncing': {
+        return `◇ syncing (${status.phase})`;
+      }
+      case 'conflict': {
+        return `! conflict (${String(status.paths.length)})`;
+      }
+      case 'offline': {
+        return `○ offline (${String(status.pendingPaths.length)} queued)`;
+      }
+      case 'error': {
+        return `! sync error`;
+      }
+    }
+  });
+
   // Formatted model status for the status bar.
   // Uses $derived.by to avoid a nested ternary that conflicts with unicorn's rule.
   const modelStatus = $derived.by(() => {
@@ -80,6 +140,13 @@
   <footer class="status-bar" aria-label="App status">
     <span class="status-auth">{auth.user ?? 'not signed in'}</span>
     <span class="status-model">{modelStatus}</span>
+    <span
+      class="status-sync"
+      class:sync-error={syncStatus.kind === 'error' || syncStatus.kind === 'conflict'}
+      class:sync-active={syncStatus.kind === 'syncing' || syncStatus.kind === 'pending'}
+    >
+      {syncStatusLabel}
+    </span>
     <span
       class="status-network"
       class:online={network.online}
@@ -137,6 +204,14 @@
 
   .status-auth {
     flex: 1;
+  }
+
+  .status-sync.sync-active {
+    color: var(--color-accent);
+  }
+
+  .status-sync.sync-error {
+    color: var(--color-danger);
   }
 
   .status-network.online {
