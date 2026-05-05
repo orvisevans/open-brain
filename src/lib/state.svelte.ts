@@ -16,3 +16,11 @@ export const model = $state<{
 
 // Initialised conservatively; the layout updates it via navigator.onLine + events.
 export const network = $state<{ online: boolean }>({ online: true });
+
+// The repo currently cloned into the virtual filesystem. Populated when the
+// user clones in /setup; restored from IndexedDB on reload. Browse uses this
+// to scope GitHub code-search queries.
+export const repo = $state<{
+  owner: string | undefined;
+  name: string | undefined;
+}>({ owner: undefined, name: undefined });

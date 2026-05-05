@@ -2,7 +2,9 @@
   import type { Snippet } from 'svelte';
   import { page } from '$app/state';
 
-  import { auth, model, network } from '$lib/state.svelte';
+  import { logError } from '$lib/log';
+  import { auth, model, network, repo } from '$lib/state.svelte';
+  import { getStoredRepo } from '$lib/sync/repo-storage';
   import '../app.css';
 
   interface Properties {
@@ -10,6 +12,21 @@
   }
 
   const { children }: Properties = $props();
+
+  // Hydrate the cloned-repo identity from IndexedDB on mount.
+  $effect(() => {
+    void (async () => {
+      try {
+        const stored = await getStoredRepo();
+        if (stored !== undefined) {
+          repo.owner = stored.owner;
+          repo.name = stored.name;
+        }
+      } catch (error: unknown) {
+        logError('layout/restore-repo', { error });
+      }
+    })();
+  });
 
   // Wire up online/offline detection.
   $effect(() => {

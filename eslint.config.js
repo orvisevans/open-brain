@@ -110,6 +110,12 @@ export default tseslint.config(
 
       // Svelte's generated code sometimes conflicts with this specific lint.
       'unicorn/no-useless-undefined': 'off',
+
+      // Svelte component filenames are conventionally PascalCase
+      // (`Editor.svelte`, `FileTree.svelte`). Unicorn defaults to kebab-case
+      // only; allow either for Svelte components specifically. Plain
+      // (non-component) `.svelte.ts` files keep the kebab default.
+      'unicorn/filename-case': ['error', { cases: { kebabCase: true, pascalCase: true } }],
     },
   },
 

@@ -9,8 +9,9 @@
   import { clearAccessToken, getAccessToken, setAccessToken } from '$lib/auth/storage';
   import { GEMMA_MODEL_ID, loadModel } from '$lib/llm/runtime';
   import { logError } from '$lib/log';
-  import { auth, model } from '$lib/state.svelte';
+  import { auth, model, repo } from '$lib/state.svelte';
   import { cloneRepository } from '$lib/sync/git';
+  import { clearStoredRepo, setStoredRepo } from '$lib/sync/repo-storage';
 
   // GitHub App client_id — set VITE_GITHUB_CLIENT_ID in your .env (Iv23li… prefix).
   const rawClientId: unknown = import.meta.env['VITE_GITHUB_CLIENT_ID'];
@@ -93,11 +94,14 @@
     void (async () => {
       try {
         await clearAccessToken();
+        await clearStoredRepo();
       } catch (error: unknown) {
         logError('setup/sign-out', { error });
       }
       auth.token = undefined;
       auth.user = undefined;
+      repo.owner = undefined;
+      repo.name = undefined;
       userCode = undefined;
       verificationUri = undefined;
       authStep = 'idle';
@@ -163,6 +167,9 @@
     void (async () => {
       try {
         await cloneRepository(owner, name, token);
+        await setStoredRepo({ owner, name });
+        repo.owner = owner;
+        repo.name = name;
         cloneStep = 'done';
       } catch (error: unknown) {
         logError('setup/clone', { error });

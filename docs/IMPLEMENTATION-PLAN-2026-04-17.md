@@ -176,63 +176,91 @@ Goal: one running app that proves every hard integration works. Ugly is fine. No
 - [x] On a WebGPU-capable Chrome: sign in → clone a throwaway repo → load Gemma-1B → send one message and see tokens stream back → embed a string → see a vector. All without a reload.
 - [x] `npm run check` green
 - [x] Tag commit `walking-skeleton-green`
-- [ ] Review Phase 2's tasks against what the skeleton revealed; update if any integration detail differed from the sketch
+- [x] Review Phase 2's tasks against what the skeleton revealed; update if any integration detail differed from the sketch
 
 ---
 
 ## Phase 2 — Vault & Browse tab
 
 ### Vault module (`src/lib/vault/`)
-- [ ] `readNote(path)` / `writeNote(path, content)` over lightning-fs
-- [ ] `listNotes()` — recursive walk under `notes/`
-- [ ] `parseFrontmatter(content)` → `{ frontmatter, body }`; use `gray-matter` or a minimal handwritten parser
-- [ ] `extractWikilinks(body)` → `WikilinkRef[]` (per architecture §3)
-- [ ] Unit tests for all of the above (these are pure; lightning-fs mocked in-memory)
+
+Public path type is `NotePath` (repo-relative POSIX, e.g. `notes/foo.md`) per [ARCHITECTURE §3](./ARCHITECTURE-2026-04-17.md). The vault reuses the shared `fs = new LightningFS('openbrain-fs')` exported from `src/lib/sync/git.ts`, translating `NotePath` → `/repo/<path>` internally. No new lightning-fs instance is created, and no `$lib/polyfills` import is needed (vault is pure `fs.promises` + string manipulation).
+
+- [x] `readNote(path: NotePath)` / `writeNote(path: NotePath, content: string)` via `fs.promises` on the shared `fs` from `$lib/sync/git`. `writeNote` `mkdir -p`s the parent directory (fresh repos have no `/repo/notes/` yet). Also added `readRaw(path)` returning verbatim file contents for the editor — see §10 2026-05-05.
+- [x] `listNotes()` — recursive **fs-walk** under `/repo/notes/` via `fs.promises.readdir`. **Not** `gitListFiles` — new/unsaved notes must appear before they're committed.
+- [x] `parseFrontmatter(content)` → `{ frontmatter, body }` — **handwritten** minimal parser (flat `key: value` + simple `key: [a, b, c]` lists). No `gray-matter` dep. Revisit in Phase 4 if sidecar frontmatter needs richer YAML.
+- [x] `extractWikilinks(body, from: NotePath)` → `WikilinkReference[]` conforming to [ARCHITECTURE §3](./ARCHITECTURE-2026-04-17.md): supports `[[target]]` and `[[target|display]]`, returns `{ from, to, display? }`. Renamed from `WikilinkRef` to satisfy `unicorn/prevent-abbreviations`; see §10 2026-05-05.
+- [x] All error paths route through `logError('vault/<op>', { ... })` (helper at `src/lib/log.ts`; already used elsewhere in the skeleton).
+- [x] Unit tests colocated in `src/lib/vault/__tests__/` — pure, Node-env Vitest. Mock `fs.promises` with an in-memory shim; do **not** instantiate a real LightningFS in tests.
 
 ### Browse UI
-- [ ] File tree component (recursive) reading from `listNotes()`; click opens note in editor
-- [ ] Route: `/browse/[...path]` opens a specific note
-- [ ] CodeMirror 6 integration as a Svelte action:
-    - [ ] Install `codemirror`, `@codemirror/lang-markdown`, `@codemirror/autocomplete`, `@codemirror/search`
-    - [ ] Wrapper component `Editor.svelte` — value in/out via props, runes-based
-    - [ ] Markdown language support enabled
-    - [ ] Soft-wrap on, no line numbers, mobile-friendly
-- [ ] **Wikilink autocomplete extension**
-    - [ ] Detect `[[` trigger; offer completions from `listNotes()`
-    - [ ] `[[target|display]]` syntax supported in the parser, autocomplete fills `target`
-- [ ] Autosave: on editor change, debounce ~3s then call `writeNote`
-- [ ] "New note" button: creates `notes/untitled-<timestamp>.md` and opens it
+
+The existing `src/routes/browse/+page.svelte` is a flat list of every tracked file from `listFiles()` — Phase 2 **replaces** it with a tree + editor layout; it is not extended.
+
+- [x] Replace `/browse/+page.svelte` with a sidebar-tree + editor layout. Implemented as a `/browse/+layout.svelte` owning the sidebar, with the bare `/browse/+page.svelte` showing an empty state and the dynamic detail under `/browse/[...path]/+page.svelte`.
+- [x] File tree component (recursive) reading from `listNotes()`; click opens note in editor. `FileTree.svelte` uses self-import (Svelte 5 deprecated `<svelte:self>`).
+- [x] Route: `/browse/[...path]` opens a specific note. Bare `/browse` shows an empty state (or the most recently edited note).
+- [x] CodeMirror 6 integration as a Svelte action:
+    - [x] Install: `codemirror`, `@codemirror/lang-markdown`, `@codemirror/autocomplete`, `@codemirror/search`, plus explicit peer deps `@codemirror/view`, `@codemirror/state`, `@codemirror/commands` (pin them to avoid duplicate-version hell)
+    - [x] Wrapper component `Editor.svelte` — value in/out via props, runes-based
+    - [x] Markdown language support enabled
+    - [x] Soft-wrap on, no line numbers, mobile-friendly
+- [x] **Wikilink autocomplete extension**
+    - [x] Detect `[[` trigger; offer completions from `listNotes()`
+    - [x] `[[target|display]]` syntax supported in the parser, autocomplete fills `target`
+- [x] Autosave: on editor change, debounce ~3s then call `writeNote`. Use `just-debounce-it` (promoted to a direct dependency).
+- [x] "New note" button: creates `notes/untitled-<timestamp>.md` and opens it. Relies on `writeNote`'s `mkdir -p` behavior for the first note on a fresh repo.
 
 ### GitHub full-text search
-- [ ] `/browse` has a search input
-- [ ] Online: query GitHub Search API (`search/code`) scoped to the user's repo
-- [ ] Offline: fall back to local substring search over `listNotes()` + `readNote`
-- [ ] Results list clickable → opens note
+- [x] `/browse` has a search input
+- [x] Add `repo: { owner: string; name: string } | undefined` rune to `src/lib/state.svelte.ts` (populated at clone time in setup; hydrated from IndexedDB on load). Required so Browse knows what repo to scope queries to. Persistence lives in `src/lib/sync/repo-storage.ts` (separate IndexedDB so we don't have to bump `openbrain-auth`'s schema version).
+- [x] Online: `GET /__gh_api/search/code?q=<term>+repo:<owner>/<name>` with the stored device-flow token in `Authorization: Bearer …`. The `/__gh_api` same-origin proxy is already wired in `vite.config.ts`.
+- [x] Offline (`!navigator.onLine`, or on 4xx/5xx): fall back to local substring search over `listNotes()` + `readNote`
+- [x] Results list clickable → routes to `/browse/<path>`
 
 ### Exit criteria
-- [ ] Can create, edit, and browse notes. Wikilink autocomplete works. Changes autosave to lightning-fs.
-- [ ] `npm run check` green
+- [ ] Can create, edit, and browse notes. Wikilink autocomplete works. Changes autosave to lightning-fs. _(Pending manual browser verification.)_
+- [x] `npm run check` green
 - [ ] Review Phase 3's tasks against what you learned about Vault API shape + CodeMirror integration; update if needed
 
 ---
 
 ## Phase 3 — Sync engine
 
+Spec tightened post-Phase-2 review. Decisions captured below; rationale in §10 entry `2026-05-05 — Phase 3 spec review`.
+
 ### Sync module (`src/lib/sync/`)
-- [ ] `commit(paths, message)` wrapper
-- [ ] `push()` — uses the stored OAuth token for HTTP auth
-- [ ] `pull()` — fetches, merges
-- [ ] `status()` — returns list of changed/untracked paths
-- [ ] `SyncEngine` class exposing `SyncStatus` as a Svelte store (rune-backed)
-- [ ] Debounced auto-sync: coalesce edits from Vault into commits every ~5s idle
-- [ ] Status bar wires to `SyncStatus`: `▲ synced Xs ago` / `◆ N pending` / `○ offline` / `◇ syncing`
+
+The existing `src/lib/sync/git.ts` ships `cloneRepository()` only; Phase 3 adds the rest of the smart-HTTP surface. All ops share the same plumbing — extract a helper rather than copy-pasting `corsProxy: '/__gh_git'` + `onAuth: …` into each call site.
+
+- [ ] `withGitDefaults(token: string)` helper inside `git.ts` that returns the common isomorphic-git options (`fs`, `http`, `dir: '/repo'`, `corsProxy: '/__gh_git'`, `onAuth`). Every new op (`commit`, `push`, `pull`, `status`, `add`) builds on it.
+- [ ] `add(paths: NotePath[])` wrapper — stages files via `git.add` (per-path call; batched).
+- [ ] `commit(paths: NotePath[], message: string)` wrapper. Author defaults to `{ name: auth.user ?? 'open-brain', email: 'noreply@open-brain.local' }` — see Decision Log. `message` defaults to `'open-brain: sync <ISO timestamp>'` when caller passes none.
+- [ ] `push()` — uses `onAuth` for HTTP Basic; targets `refs/heads/main` (default GitHub branch for new repos). Document in Decision Log; revisit if a user reports `master`-only repos failing.
+- [ ] `pull()` — fetch + merge. `singleBranch: true` to keep the working FS minimal. Merges return one of three outcomes consumed by the conflict tier dispatcher.
+- [ ] `status(): Promise<{ path: NotePath; state: 'modified' | 'untracked' | 'deleted' }[]>` — wraps `git.statusMatrix` and projects it to the small shape we actually need.
+- [ ] `SyncEngine` class in `src/lib/sync/engine.ts` exposing `SyncStatus` (per [ARCHITECTURE §3](./ARCHITECTURE-2026-04-17.md)) via a module-level `$state` rune (mirrors `state.svelte.ts` conventions).
+- [ ] **Vault → Sync change notification.** Extend `createVault(fs, options)` to accept `options.onChange?: (path: NotePath) => void`. The production wiring in `src/lib/vault/index.ts` injects a callback that calls `syncEngine.notifyChange(path)`. Tests still pass nothing.
+- [ ] **Debounce:** SyncEngine debounces **from the last vault `onChange` call**, not from last keystroke. Editor's 3s + Sync's 5s stack on purpose: the cap on time-to-GitHub for a fresh edit is ~8s. Document the budget; do not collapse the debounces.
+- [ ] During the debounce window, accumulate changed paths in a Set. On window expiry: stage all → commit single squashed commit → push.
+- [ ] Status bar wires to `SyncStatus`: `▲ synced Xs ago` / `◆ N pending` / `○ offline` / `◇ syncing`. Add a fourth segment to `+layout.svelte`'s status bar (currently auth | model | network).
 
 ### Conflict resolution — three tiers
-- [ ] **Tier 1:** 3-way auto-merge via isomorphic-git's merge driver on pull
-- [ ] **Tier 2:** Detect overlap → leave conflict markers in file → emit `{ kind: "conflict" }` status
-    - [ ] Resolver UI: side-by-side or inline with "keep ours" / "keep theirs" / "edit manually" per conflict block
-    - [ ] On resolve, commit the resolved file
-- [ ] **Tier 3:** On merge-engine failure, write `<path>.conflict-<ISO>.md` with the local version, take remote as canonical, commit both, toast the user
+
+Tier 2's "resolver UI" was hand-wavy; concretized below.
+
+- [ ] **Tier 1:** 3-way auto-merge via isomorphic-git's merge driver on pull. On clean merge, push the merge commit immediately.
+- [ ] **Tier 2:** Detect overlap → isomorphic-git writes conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) into the affected files → emit `{ kind: "conflict", paths }` on `SyncStatus`.
+    - [ ] Resolver UI: render conflict markers **inline in the existing CodeMirror editor** as decorated regions with a small overlay button group (`keep ours` / `keep theirs` / `edit manually`) per hunk. Avoid a separate diff route — keep the user in the editor they already have open. New extension at `src/lib/browse/conflict-overlay.ts`.
+    - [ ] On resolve action, mutate the document to remove the markers, save through the vault, and commit. SyncEngine pushes on the next debounce cycle.
+- [ ] **Tier 3:** On merge-engine failure (i.e., isomorphic-git throws), write `<path>.conflict-<ISO>.md` with the local version, take remote as canonical for `<path>`, commit both, surface a toast (toast component is Phase 9 — for Phase 3 use a banner in the status bar).
+
+### Testing
+
+Vitest cannot drive a real GitHub remote. Split the test surface explicitly:
+
+- [ ] **Unit tests** (Vitest): SyncEngine queue/debounce state machine, conflict-tier dispatcher, `status()` projection. Mock at the `git.ts` wrapper layer — define `GitOps` interface, inject a fake. Do NOT mock isomorphic-git itself (too large, too many entry points).
+- [ ] **Manual e2e** (browser): two-profile editing; offline → online resume; conflict-tier-2 happy path. Capture results in this section as checked boxes when verified.
 
 ### Exit criteria
 - [ ] Edits sync to GitHub automatically.
@@ -472,6 +500,23 @@ Record non-obvious decisions made during implementation that future sessions sho
   4. **`Buffer` polyfill for browser.** isomorphic-git 1.37.x uses Node's `Buffer` global in ~40 places (index serialization, tree writes, SHA-1 hex↔binary). Upstream expects consumers to polyfill `Buffer` in browsers. Added `src/lib/polyfills.ts` which assigns `globalThis.Buffer` from the `buffer` npm package, and `src/lib/sync/git.ts` side-effect-imports it before its isomorphic-git imports.
 
   Net effect: sign-in + clone both work same-origin, with per-repo-scoped tokens, and no third-party host in the auth/sync path. §11 blocker removed.
+- `2026-04-22` — **Phase 2 spec tightened after walking-skeleton review.** Vault reuses the shared `fs` from `$lib/sync/git` and exposes `NotePath` (repo-relative) while translating to `/repo/…` internally. `listNotes()` fs-walks (via `fs.promises.readdir`) rather than calling `gitListFiles` so unsaved notes appear. Frontmatter: handwritten parser, no `gray-matter` dep, until Phase 4 forces richer YAML. Debounce: `just-debounce-it` promoted from transitive lockfile entry to a direct dependency. CodeMirror peer deps (`view`/`state`/`commands`) listed explicitly to prevent duplicate-version issues. `repo: { owner, name }` rune added to `state.svelte.ts` so Browse's GitHub code search can scope queries. The existing `/browse/+page.svelte` (flat list of tracked files) is **replaced** in Phase 2, not extended.
+- `2026-05-05` — **Phase 2 implementation notes.**
+  1. **Vault depends on a `FsLike` interface, not on `LightningFS` directly.** The vault module declares a small `fs.promises` subset (`src/lib/vault/fs-like.ts`) and accepts it via `createVault(fs)`. Production wires the shared LightningFS in `src/lib/vault/index.ts`; tests pass a pure in-memory shim (`__tests__/mem-fs.ts`). Avoids dragging IndexedDB into the Node-env Vitest runner.
+  2. **Vault exposes `readRaw(path)` alongside `readNote(path)`.** `readNote` returns parsed `{ content: body, frontmatter }` for structured access (used by Phase 4 sidecar pipelines); `readRaw` returns the verbatim file string for the editor, where re-serialising frontmatter would risk lossy round-trips through our minimal parser. The `/browse/[...path]` route uses `readRaw`.
+  3. **Type renames for lint compliance.** `WikilinkRef` → `WikilinkReference`, parser literals `null`/`~` map to `undefined` (not `null`) — both forced by `unicorn/prevent-abbreviations` and `unicorn/no-null` respectively. ARCHITECTURE-2026-04-17.md still uses `WikilinkRef`; treat the implementation name as canonical.
+  4. **CodeMirror's autocomplete API requires `null`** (the `CompletionResult | null` union is part of its contract). `unicorn/no-null` is suppressed file-locally in `src/lib/browse/wikilink-completion.ts` via a single block-level `eslint-disable` comment, not in eslint config.
+  5. **PascalCase Svelte filenames are now allowed by lint.** Added `unicorn/filename-case: ['error', { cases: { kebabCase: true, pascalCase: true } }]` to the Svelte block in `eslint.config.js`. Justification: PascalCase is the conventional Svelte component naming and is consistent with how the components are imported. Plain `.ts`/`.svelte.ts` files keep the kebab-only default.
+  6. **Repo identity persisted in a separate IndexedDB** (`openbrain-repo`) rather than adding a new object store to `openbrain-auth`. Avoids a `version: 1 → 2` migration on existing installs. Setup writes on clone, layout hydrates on mount.
+  7. **Search returns a tagged array** (`SearchResult` extends `SearchHit[]` with a `source: 'github' | 'local'` discriminator). The UI surfaces which path served the results so users know if they're seeing GitHub-indexed or fresh-local hits.
+- `2026-05-05` — **Phase 3 spec review (pre-implementation).** Concrete decisions resolved before starting Phase 3:
+  1. **Vault → Sync notification mechanism: optional `onChange` callback in `VaultOptions`.** Avoids global event-bus spaghetti; the production `vault/index.ts` injects the SyncEngine's `notifyChange` at construction. Tests remain pure (no callback wired).
+  2. **Author identity for `git.commit()`:** `{ name: auth.user ?? 'open-brain', email: 'noreply@open-brain.local' }`. We deliberately did NOT request the GitHub `user:email` scope — the GitHub App device-flow token doesn't grant it — so we synthesize a no-reply email. The `name` falls back to the GitHub login (always available). Phase 8 settings will let users override.
+  3. **Branch hardcoded to `main`.** GitHub default for new repos since 2020. Older `master` repos won't sync — document in §11 if anyone hits this; revisit only on report.
+  4. **Stacked debounces are intentional.** Editor's 3s + Sync's 5s = ~8s max from last keystroke to GitHub. Stacking the two windows lets each layer's "idle" detection do its own job (typing pause vs file-system-quiet pause). Do not collapse to a single timer.
+  5. **Test split:** Vitest unit-tests at the `GitOps` wrapper layer (mock `git.ts`'s public functions, not isomorphic-git itself); browser-driven manual e2e for real network. The `git.ts` wrapper becomes the seam for both.
+  6. **Conflict resolver UI lives in the existing CodeMirror editor**, not a separate diff route. New extension `conflict-overlay.ts` decorates `<<<<<<< / ======= / >>>>>>>` ranges and renders inline action buttons. Keeps users in the file they already opened.
+  7. **Status bar gets a 4th segment** for sync (`▲ synced 4s ago` etc). Did not fold sync into the network dot — they convey orthogonal information (you can be online but mid-conflict; offline but with no pending changes).
 
 ---
 

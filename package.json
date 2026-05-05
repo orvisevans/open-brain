@@ -45,10 +45,18 @@
     "vitest": "^2.1.8"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.20.1",
+    "@codemirror/commands": "^6.10.3",
+    "@codemirror/lang-markdown": "^6.5.0",
+    "@codemirror/search": "^6.7.0",
+    "@codemirror/state": "^6.6.0",
+    "@codemirror/view": "^6.41.1",
     "@isomorphic-git/lightning-fs": "^4.6.2",
     "@mlc-ai/web-llm": "^0.2.82",
     "@xenova/transformers": "^2.17.2",
     "buffer": "^6.0.3",
-    "isomorphic-git": "^1.37.5"
+    "codemirror": "^6.0.2",
+    "isomorphic-git": "^1.37.5",
+    "just-debounce-it": "^3.2.0"
   }
 }
