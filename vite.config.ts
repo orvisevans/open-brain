@@ -1,8 +1,20 @@
 import type { IncomingMessage } from 'node:http';
+import { fileURLToPath } from 'node:url';
 
 import { sveltekit } from '@sveltejs/kit/vite';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig, type ProxyOptions } from 'vite';
+
+// Path to isomorphic-git's pure-ESM entry. We can't reach it through any
+// package-resolution API: the package's `exports` field exposes neither
+// `./index.js` nor `./package.json`, so `createRequire.resolve` and
+// `import.meta.resolve` both fail with "Package subpath ... is not
+// defined by exports". The file is at a known location in node_modules,
+// so we point Vite straight at it. If the dependency layout ever
+// changes (e.g. a hoisted monorepo install), this needs adjusting.
+const isomorphicGitEsm = fileURLToPath(
+  new URL('./node_modules/isomorphic-git/index.js', import.meta.url),
+);
 
 // Dev-only same-origin proxy for GitHub OAuth device-flow endpoints.
 // github.com does not set CORS headers on /login/device/code or
@@ -32,18 +44,31 @@ const stripBasicAuthChallenge: ProxyOptions['configure'] = (proxy) => {
 
 export default defineConfig({
   plugins: [tailwindcss(), sveltekit()],
+  // isomorphic-git's package.json `exports["."]` only defines a
+  // `default: ./index.cjs` (CommonJS, uses node:crypto's `createHash`).
+  // Without an `import` condition, even ESM consumers in browsers
+  // resolve to the CJS build, which crashes in Chromium with
+  // `crypto$1.createHash is not a function`. The package ships a
+  // pure-JS ESM build at `index.js` that uses `sha.js` for SHA-1 —
+  // alias bare `isomorphic-git` imports straight to its absolute path.
+  // (Safari happens to tolerate the broken resolution in some bundling
+  // paths but Chromium does not.)
   resolve: {
-    alias: {
-      // isomorphic-git's package.json `exports.["."]` only defines a
-      // `default: ./index.cjs` (CommonJS, uses node:crypto's `createHash`).
-      // Without an `import` condition, even ESM consumers in browsers
-      // resolve to the CJS build, which crashes in Chromium with
-      // `crypto$1.createHash is not a function`. The package ships a
-      // pure-JS ESM build at `index.js` that uses `sha.js` for SHA-1 —
-      // alias straight to it. (Safari happens to tolerate the broken
-      // resolution in some bundling paths but Chromium does not.)
-      'isomorphic-git$': 'isomorphic-git/index.js',
-    },
+    alias: [
+      // Array form so we can use a regex `find`. Vite's record form does
+      // exact-match against the literal key (the `$` suffix isn't
+      // honoured the way it is in webpack), which means the bare
+      // specifier `isomorphic-git` would not be matched.
+      { find: /^isomorphic-git$/, replacement: isomorphicGitEsm },
+    ],
+  },
+  // Tell Vite's pre-bundler not to optimise isomorphic-git: when it does,
+  // it pre-builds the package once and caches it in node_modules/.vite
+  // BEFORE the alias is applied, so the cached chunk still contains the
+  // CJS build. Excluding it forces request-time resolution, which goes
+  // through the alias.
+  optimizeDeps: {
+    exclude: ['isomorphic-git'],
   },
   server: {
     proxy: {
