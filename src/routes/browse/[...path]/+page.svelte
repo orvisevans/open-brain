@@ -165,6 +165,7 @@
         onChange={handleChange}
         notes={getNotes}
         onResolveConflict={handleResolveConflict}
+        onSave={() => void flushSave()}
       />
     </div>
   {/if}

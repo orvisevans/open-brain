@@ -32,6 +32,19 @@ const stripBasicAuthChallenge: ProxyOptions['configure'] = (proxy) => {
 
 export default defineConfig({
   plugins: [tailwindcss(), sveltekit()],
+  resolve: {
+    alias: {
+      // isomorphic-git's package.json `exports.["."]` only defines a
+      // `default: ./index.cjs` (CommonJS, uses node:crypto's `createHash`).
+      // Without an `import` condition, even ESM consumers in browsers
+      // resolve to the CJS build, which crashes in Chromium with
+      // `crypto$1.createHash is not a function`. The package ships a
+      // pure-JS ESM build at `index.js` that uses `sha.js` for SHA-1 —
+      // alias straight to it. (Safari happens to tolerate the broken
+      // resolution in some bundling paths but Chromium does not.)
+      'isomorphic-git$': 'isomorphic-git/index.js',
+    },
+  },
   server: {
     proxy: {
       // api.github.com → installation / user lookups (installations.ts).

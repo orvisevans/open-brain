@@ -6,12 +6,13 @@
     listInstallations,
     type GitHubRepo,
   } from '$lib/auth/installations';
-  import { clearAccessToken, getAccessToken, setAccessToken } from '$lib/auth/storage';
+  import { getAccessToken, setAccessToken } from '$lib/auth/storage';
+  import { wipeLocalData } from '$lib/auth/wipe';
   import { GEMMA_MODEL_ID, loadModel } from '$lib/llm/runtime';
   import { logError } from '$lib/log';
   import { auth, model, repo } from '$lib/state.svelte';
   import { cloneRepository } from '$lib/sync/git';
-  import { clearStoredRepo, setStoredRepo } from '$lib/sync/repo-storage';
+  import { setStoredRepo } from '$lib/sync/repo-storage';
 
   // GitHub App client_id — set VITE_GITHUB_CLIENT_ID in your .env (Iv23li… prefix).
   const rawClientId: unknown = import.meta.env['VITE_GITHUB_CLIENT_ID'];
@@ -93,24 +94,16 @@
   function signOut() {
     void (async () => {
       try {
-        await clearAccessToken();
-        await clearStoredRepo();
+        // Wipe every IndexedDB database we own (auth token, repo identity,
+        // and the lightning-fs working tree). The WebLLM model cache lives
+        // in a separate database and is intentionally preserved — it's
+        // multi-GB and reusable across logins. Reload right after so any
+        // open db handles drop and the runes re-initialise from a clean slate.
+        await wipeLocalData();
       } catch (error: unknown) {
         logError('setup/sign-out', { error });
       }
-      auth.token = undefined;
-      auth.user = undefined;
-      repo.owner = undefined;
-      repo.name = undefined;
-      userCode = undefined;
-      verificationUri = undefined;
-      authStep = 'idle';
-      repoStep = 'idle';
-      repoError = undefined;
-      availableRepos = [];
-      selectedRepo = undefined;
-      cloneStep = 'idle';
-      cloneError = undefined;
+      globalThis.location.assign('/setup');
     })();
   }
 

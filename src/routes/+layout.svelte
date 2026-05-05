@@ -86,13 +86,36 @@
     };
   });
 
+  // Wall-clock that ticks every second so the "synced Xs ago" label
+  // counts up live. Reads `now` inside the derived label, which makes
+  // the label re-derive on every tick.
+  let now = $state(Date.now());
+  $effect(() => {
+    const id = globalThis.setInterval(() => {
+      now = Date.now();
+    }, 1000);
+    return () => {
+      globalThis.clearInterval(id);
+    };
+  });
+
+  function formatSince(ms: number): string {
+    const seconds = Math.max(0, Math.round(ms / 1000));
+    if (seconds < 60) return `${String(seconds)}s ago`;
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `${String(minutes)}m ago`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${String(hours)}h ago`;
+    const days = Math.round(hours / 24);
+    return `${String(days)}d ago`;
+  }
+
   const syncStatusLabel = $derived.by(() => {
     const status = syncStatus;
     switch (status.kind) {
       case 'idle': {
         if (status.lastSyncAt === undefined) return '▲ idle';
-        const seconds = Math.max(0, Math.round((Date.now() - status.lastSyncAt) / 1000));
-        return `▲ synced ${String(seconds)}s ago`;
+        return `▲ synced ${formatSince(now - status.lastSyncAt)}`;
       }
       case 'pending': {
         return `◆ ${String(status.pendingPaths.length)} pending`;

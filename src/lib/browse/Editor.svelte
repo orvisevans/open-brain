@@ -29,9 +29,11 @@
     notes: NotePathProvider;
     /** Called when the user picks "keep ours / keep theirs" on a conflict hunk. */
     onResolveConflict?: (next: string) => void;
+    /** Called on Cmd/Ctrl-S — host should flush any pending save immediately. */
+    onSave?: () => void;
   }
 
-  const { value, onChange, notes, onResolveConflict }: Properties = $props();
+  const { value, onChange, notes, onResolveConflict, onSave }: Properties = $props();
 
   let host = $state<HTMLDivElement | undefined>(undefined);
   let view: EditorView | undefined;
@@ -42,7 +44,9 @@
     // Read every prop via untrack so the only dependency this effect has is
     // `host`. `host` only changes once (when the bind:this populates it) so
     // the editor mounts exactly once for the component's lifetime.
-    const initialState = untrack(() => createState(value, onChange, notes, onResolveConflict));
+    const initialState = untrack(() =>
+      createState(value, onChange, notes, onResolveConflict, onSave),
+    );
     view = new EditorView({ state: initialState, parent: host });
 
     return () => {
@@ -69,12 +73,27 @@
     onChangeCallback: (next: string) => void,
     notesProvider: NotePathProvider,
     onResolveConflictCallback: ((next: string) => void) | undefined,
+    onSaveCallback: (() => void) | undefined,
   ): EditorState {
     return EditorState.create({
       doc: initial,
       extensions: [
         history(),
-        keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap]),
+        keymap.of([
+          // Mod-s = Cmd-S on macOS, Ctrl-S elsewhere. CodeMirror normalises
+          // this for us. Returning `true` swallows the event so the browser
+          // doesn't open its own Save Page dialog.
+          {
+            key: 'Mod-s',
+            run: () => {
+              onSaveCallback?.();
+              return true;
+            },
+          },
+          ...defaultKeymap,
+          ...historyKeymap,
+          ...searchKeymap,
+        ]),
         search(),
         markdown(),
         wikilinkCompletion(notesProvider),
