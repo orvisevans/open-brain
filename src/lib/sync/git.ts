@@ -139,6 +139,16 @@ async function push(token: string): Promise<void> {
 
 async function pull(token: string, author: GitAuthor): Promise<PullResult> {
   try {
+    // No cloned repo yet → nothing to pull. Without this guard, the periodic
+    // pull from the layout fires after sign-in on /setup (before the user
+    // has clicked Clone) and either ENOENTs against /repo or — worse, with
+    // a stale /repo from a prior session — issues a real network request
+    // that GitHub answers with 401 + WWW-Authenticate, popping a Basic-auth
+    // dialog at the user.
+    if ((await headOid()) === undefined) {
+      return { kind: 'up-to-date' };
+    }
+
     // isomorphic-git's `pull` does fetch + merge in one shot. We use
     // `abortOnConflict: false` so conflict markers are written into the
     // working files — that's what tier 2's resolver UI inspects.
