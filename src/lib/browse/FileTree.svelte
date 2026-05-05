@@ -2,6 +2,8 @@
   // Recursive file/folder tree. Folders are click-to-expand; files navigate
   // to /browse/<path>. Active note is highlighted.
 
+  import { SvelteSet } from 'svelte/reactivity';
+
   import type { NotePath } from '$lib/vault';
 
   import type { TreeNode } from './tree';
@@ -17,7 +19,10 @@
 
   // Track expansion locally — only directories at this level get state, but
   // since each FileTree instance only owns one level, this is fine.
-  const expanded = $state<Set<string>>(new Set());
+  // SvelteSet (vs `$state(new Set())`) is required for `.add`/`.delete`
+  // mutations to trigger reactivity — Svelte 5 only auto-proxies plain
+  // objects and arrays, not Set/Map.
+  const expanded = new SvelteSet<string>();
 
   function toggle(name: string): void {
     if (expanded.has(name)) {

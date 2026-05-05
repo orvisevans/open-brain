@@ -3,12 +3,16 @@
 // just editing the markers out — the decoration vanishes once the hunk
 // stops parsing.
 //
-// We re-parse the document on every update. The cost is acceptable for
+// We re-parse the document on every doc change. The cost is acceptable for
 // typical note files (≤ a few KB), and avoids the bookkeeping of an
 // incremental decoration approach.
+//
+// IMPORTANT: decorations are exposed via the ViewPlugin's `decorations`
+// provider, NOT by dispatching a transaction from within `update()`.
+// CodeMirror forbids re-entrant updates, and dispatching from `update()`
+// crashes the plugin on every keystroke.
 
 import type { Extension, Range } from '@codemirror/state';
-import { StateEffect, StateField } from '@codemirror/state';
 import {
   Decoration,
   type DecorationSet,
@@ -75,60 +79,48 @@ class HunkActionsWidget extends WidgetType {
   }
 }
 
-// State effect that pushes a fresh decoration set in. Used by the view
-// plugin below; needed so we can pass the resolve callback through.
-const setConflictDecorations = StateEffect.define<DecorationSet>();
-
-const conflictField = StateField.define<DecorationSet>({
-  create: () => Decoration.none,
-  update: (current, transaction) => {
-    // current.map is DecorationSet#map (positional remap across changes),
-    // not Array#map — the unicorn rule cannot tell these apart.
-    // eslint-disable-next-line unicorn/no-array-callback-reference
-    let next = current.map(transaction.changes);
-    for (const effect of transaction.effects) {
-      if (effect.is(setConflictDecorations)) next = effect.value;
-    }
-    return next;
-  },
-  provide: (field) => EditorView.decorations.from(field),
-});
+function buildDecorations(view: EditorView, onResolve: ConflictResolveCallback): DecorationSet {
+  const text = view.state.doc.toString();
+  const hunks = parseConflicts(text);
+  const ranges: Range<Decoration>[] = [];
+  for (const hunk of hunks) {
+    const widget = new HunkActionsWidget(hunk, (side) => {
+      const current = view.state.doc.toString();
+      // Re-parse against the live document so an action stays valid even if
+      // other hunks were resolved between paint and click.
+      const live = parseConflicts(current);
+      const target = live.find((h) => h.from === hunk.from);
+      if (target === undefined) return;
+      onResolve(resolveHunk(current, target, side));
+    });
+    ranges.push(
+      Decoration.mark({ class: 'cm-conflict-hunk' }).range(hunk.from, hunk.to),
+      Decoration.widget({ widget, side: -1, block: true }).range(hunk.from),
+    );
+  }
+  return Decoration.set(ranges, true);
+}
 
 export function conflictOverlay(onResolve: ConflictResolveCallback): Extension {
+  const plugin = ViewPlugin.fromClass(
+    class {
+      decorations: DecorationSet;
+      constructor(view: EditorView) {
+        this.decorations = buildDecorations(view, onResolve);
+      }
+      update(update: ViewUpdate): void {
+        if (update.docChanged) {
+          this.decorations = buildDecorations(update.view, onResolve);
+        }
+      }
+    },
+    {
+      decorations: (value) => value.decorations,
+    },
+  );
+
   return [
-    conflictField,
-    ViewPlugin.fromClass(
-      class {
-        constructor(view: EditorView) {
-          this.refresh(view);
-        }
-        update(update: ViewUpdate): void {
-          if (update.docChanged) this.refresh(update.view);
-        }
-        refresh(view: EditorView): void {
-          const text = view.state.doc.toString();
-          const hunks = parseConflicts(text);
-          const ranges: Range<Decoration>[] = [];
-          for (const hunk of hunks) {
-            const widget = new HunkActionsWidget(hunk, (side) => {
-              const current = view.state.doc.toString();
-              // Re-parse against the live document so an action stays
-              // valid even if other hunks were resolved between paint
-              // and click.
-              const live = parseConflicts(current);
-              const target = live.find((h) => h.from === hunk.from);
-              if (target === undefined) return;
-              onResolve(resolveHunk(current, target, side));
-            });
-            ranges.push(
-              Decoration.mark({ class: 'cm-conflict-hunk' }).range(hunk.from, hunk.to),
-              Decoration.widget({ widget, side: -1, block: true }).range(hunk.from),
-            );
-          }
-          view.dispatch({ effects: setConflictDecorations.of(Decoration.set(ranges, true)) });
-        }
-      },
-    ),
+    plugin,
     EditorView.theme({
       '.cm-conflict-hunk': {
         backgroundColor: 'rgba(255, 159, 64, 0.08)',

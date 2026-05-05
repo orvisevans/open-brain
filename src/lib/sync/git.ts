@@ -14,6 +14,7 @@ import {
   add as gitAdd,
   clone,
   commit as gitCommit,
+  currentBranch,
   listFiles as gitListFiles,
   pull as gitPull,
   push as gitPush,
@@ -33,10 +34,17 @@ export const fs = new LightningFS('openbrain-fs');
 // All cloned repos live under this directory inside the virtual FS.
 const REPO_DIR = '/repo';
 
-// Default branch — see IMPLEMENTATION-PLAN §10 (2026-05-05). GitHub's
-// default for new repos has been `main` since 2020. Older `master` repos
-// will fail until users rename or we add detection.
-const DEFAULT_BRANCH = 'main';
+// Fallback branch when `git.currentBranch` returns undefined (e.g. detached
+// HEAD, immediately after a fresh empty clone). GitHub defaults new repos
+// to `main`, so the fallback is best-effort but not relied upon: most
+// callsites read the actual checked-out ref via `getCurrentBranch()`.
+const FALLBACK_BRANCH = 'main';
+
+async function getCurrentBranch(): Promise<string> {
+  const branch = await currentBranch({ fs, dir: REPO_DIR, fullname: false });
+  if (typeof branch === 'string' && branch !== '') return branch;
+  return FALLBACK_BRANCH;
+}
 
 // Same-origin CORS proxy for GitHub's git-over-HTTP endpoints. github.com does
 // not set Access-Control-Allow-Origin on /info/refs or /git-upload-pack. We
@@ -130,10 +138,11 @@ async function commit(message: string, author: GitAuthor): Promise<string> {
 }
 
 async function push(token: string): Promise<void> {
+  const branch = await getCurrentBranch();
   await gitPush({
     ...gitDefaults(token),
-    ref: DEFAULT_BRANCH,
-    remoteRef: DEFAULT_BRANCH,
+    ref: branch,
+    remoteRef: branch,
   });
 }
 
@@ -149,12 +158,13 @@ async function pull(token: string, author: GitAuthor): Promise<PullResult> {
       return { kind: 'up-to-date' };
     }
 
+    const branch = await getCurrentBranch();
     // isomorphic-git's `pull` does fetch + merge in one shot. We use
     // `abortOnConflict: false` so conflict markers are written into the
     // working files — that's what tier 2's resolver UI inspects.
     await gitPull({
       ...gitDefaults(token),
-      ref: DEFAULT_BRANCH,
+      ref: branch,
       singleBranch: true,
       author: { name: author.name, email: author.email },
       // @ts-expect-error abortOnConflict is documented but missing from the
