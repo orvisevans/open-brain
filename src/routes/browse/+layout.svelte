@@ -74,18 +74,28 @@
 
   // ── Search ───────────────────────────────────────────────────────────────
 
+  const SEARCH_DEBOUNCE_MS = 250;
+
   let query = $state('');
   let results = $state<SearchHit[]>([]);
   let resultsSource = $state<'github' | 'local' | undefined>(undefined);
   let searching = $state(false);
+
+  // Tracks the latest `runSearch` invocation so a slow earlier request
+  // can't overwrite a faster later one (out-of-order completion).
+  let searchToken = 0;
+  let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
   async function runSearch(): Promise<void> {
     const q = query.trim();
     if (q === '') {
       results = [];
       resultsSource = undefined;
+      searching = false;
       return;
     }
+    searchToken += 1;
+    const myToken = searchToken;
     searching = true;
     try {
       const repoReference =
@@ -93,17 +103,52 @@
           ? { owner: repo.owner, name: repo.name }
           : undefined;
       const found: SearchResult = await search(q, repoReference, auth.token);
+      // Discard if a newer search has started.
+      if (myToken !== searchToken) return;
       results = [...found];
       resultsSource = found.source;
     } catch (error: unknown) {
       logError('browse/search', { error });
     } finally {
-      searching = false;
+      if (myToken === searchToken) searching = false;
     }
   }
 
+  function scheduleSearch(): void {
+    if (searchTimer !== undefined) globalThis.clearTimeout(searchTimer);
+    searchTimer = globalThis.setTimeout(() => {
+      searchTimer = undefined;
+      void runSearch();
+    }, SEARCH_DEBOUNCE_MS);
+  }
+
+  // Auto-search as the user types: debounced so rapid keystrokes don't
+  // hammer the GitHub API. Empty query immediately clears the results.
+  $effect(() => {
+    const q = query.trim();
+    if (q === '') {
+      // Cancel any pending debounced search and clear synchronously.
+      if (searchTimer !== undefined) {
+        globalThis.clearTimeout(searchTimer);
+        searchTimer = undefined;
+      }
+      // Bump the token so any in-flight request is discarded on completion.
+      searchToken += 1;
+      results = [];
+      resultsSource = undefined;
+      searching = false;
+      return;
+    }
+    scheduleSearch();
+  });
+
   function handleSubmit(event: Event): void {
     event.preventDefault();
+    // Pressing Enter fires immediately, bypassing the debounce.
+    if (searchTimer !== undefined) {
+      globalThis.clearTimeout(searchTimer);
+      searchTimer = undefined;
+    }
     void runSearch();
   }
 </script>

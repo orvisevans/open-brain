@@ -41,14 +41,7 @@ function complete(context: CompletionContext, getNotes: NotePathProvider): Compl
   if (before.slice(trigger).includes(']]')) return null;
 
   // Bail if a `|` has been typed — we only complete the target, not the display.
-  const fragment = before.slice(trigger + 2);
-  if (fragment.includes('|') || fragment.includes('\n')) return null;
-
-  if (!context.explicit && fragment === '') {
-    // Don't show the full vault on a bare `[[` until the user types something
-    // (cuts noise on long vaults). Explicit Ctrl-Space still surfaces them.
-    return null;
-  }
+  if (/[|\n]/.test(before.slice(trigger + 2))) return null;
 
   const from = line.from + trigger + 2;
   const options: Completion[] = getNotes().map((path) => ({

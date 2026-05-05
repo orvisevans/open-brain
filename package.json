@@ -56,7 +56,6 @@
     "@xenova/transformers": "^2.17.2",
     "buffer": "^6.0.3",
     "codemirror": "^6.0.2",
-    "isomorphic-git": "^1.37.5",
-    "just-debounce-it": "^3.2.0"
+    "isomorphic-git": "^1.37.5"
   }
 }

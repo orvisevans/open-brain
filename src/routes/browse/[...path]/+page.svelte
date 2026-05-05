@@ -22,11 +22,11 @@
   let loadError = $state<string | undefined>(undefined);
   let notesList = $state<NotePath[]>([]);
 
-  // Pending autosave bookkeeping. We deliberately don't use just-debounce-it:
-  // we need to be able to FLUSH the pending save before navigating away from
-  // a note, and that package's debounced function exposes no flush hook.
-  // `pendingSave` always points at the most recent unsaved (path, content)
-  // pair, regardless of which note is currently displayed.
+  // Pending autosave bookkeeping. Hand-rolled rather than a debounce
+  // package because we need to be able to flush() the pending save before
+  // navigating away from a note. `pendingSave` always points at the most
+  // recent unsaved (path, content) pair, regardless of which note is
+  // currently displayed.
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   let pendingSave: { path: NotePath; content: string } | undefined;
 
