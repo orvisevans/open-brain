@@ -5,6 +5,14 @@
   // navigating to a different note) the editor's contents are replaced; while
   // the user is typing, changes flow out via `onChange` only — we don't echo
   // them back through `value`, which would fight the cursor.
+  //
+  // CRITICAL: the mount effect must NOT track `value` (or any other prop) as
+  // a reactive dependency. If it does, every keystroke triggers a teardown
+  // and rebuild of the EditorView (focus and selection lost). Reads of all
+  // props inside the mount effect go through `untrack()`. The separate
+  // value-watcher effect explicitly tracks `value` to handle external swaps.
+
+  import { untrack } from 'svelte';
 
   import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
   import { markdown } from '@codemirror/lang-markdown';
@@ -31,10 +39,11 @@
   $effect(() => {
     if (host === undefined) return;
 
-    view = new EditorView({
-      state: createState(value, onChange, notes, onResolveConflict),
-      parent: host,
-    });
+    // Read every prop via untrack so the only dependency this effect has is
+    // `host`. `host` only changes once (when the bind:this populates it) so
+    // the editor mounts exactly once for the component's lifetime.
+    const initialState = untrack(() => createState(value, onChange, notes, onResolveConflict));
+    view = new EditorView({ state: initialState, parent: host });
 
     return () => {
       view?.destroy();
@@ -45,10 +54,13 @@
   // External value swap (navigating to a new note). We compare against the
   // current document so user keystrokes don't trigger this branch.
   $effect(() => {
+    // Only `value` should drive this effect. `view` is a plain `let` so
+    // accessing it doesn't track.
+    const next = value;
     if (view === undefined) return;
-    if (view.state.doc.toString() === value) return;
+    if (view.state.doc.toString() === next) return;
     view.dispatch({
-      changes: { from: 0, to: view.state.doc.length, insert: value },
+      changes: { from: 0, to: view.state.doc.length, insert: next },
     });
   });
 
