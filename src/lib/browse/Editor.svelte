@@ -98,10 +98,33 @@
             height: '100%',
             fontSize: '0.9rem',
             fontFamily: 'var(--font-mono)',
+            color: 'var(--color-fg)',
+            backgroundColor: 'transparent',
           },
           '.cm-scroller': { fontFamily: 'inherit' },
-          '.cm-content': { padding: '0.75rem' },
+          '.cm-content': {
+            padding: '0.75rem',
+            // CodeMirror suppresses the native caret and draws its own
+            // .cm-cursor div on top. caretColor is normally inherited; pin
+            // it transparent so legacy browsers don't show a duplicate.
+            caretColor: 'transparent',
+          },
           '&.cm-focused': { outline: 'none' },
+          // Primary cursor: explicit color so it's visible on dark themes
+          // (CodeMirror's default is `black` and disappears on dark bg).
+          '.cm-cursor, .cm-dropCursor': {
+            borderLeftColor: 'var(--color-accent)',
+            borderLeftWidth: '2px',
+          },
+          '&.cm-focused .cm-cursor': {
+            borderLeftColor: 'var(--color-accent)',
+          },
+          '.cm-selectionBackground, ::selection': {
+            backgroundColor: 'rgba(34, 211, 238, 0.25)',
+          },
+          '&.cm-focused .cm-selectionBackground': {
+            backgroundColor: 'rgba(34, 211, 238, 0.35)',
+          },
         }),
       ],
     });
