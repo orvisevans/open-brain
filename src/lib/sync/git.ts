@@ -71,15 +71,20 @@ function gitDefaults(token?: string): GitDefaults {
 }
 
 /**
- * Shallow-clone a GitHub repository into the virtual filesystem.
+ * Clone a GitHub repository into the virtual filesystem.
  * Requires a valid GitHub App user access token (per-installation scoped).
+ *
+ * We deliberately do NOT pass `depth: 1` — shallow clones interact poorly
+ * with isomorphic-git's pull/merge: the merge-base walk can extend past
+ * the shallow boundary, and pulls land on disk inconsistently. Note repos
+ * are small enough that a full clone is fine. `singleBranch: true` is
+ * preserved because we only ever sync the default branch.
  */
 export async function cloneRepository(owner: string, name: string, token: string): Promise<void> {
   await clone({
     ...gitDefaults(token),
     url: `https://github.com/${owner}/${name}.git`,
     singleBranch: true,
-    depth: 1,
   });
 }
 
@@ -199,6 +204,7 @@ export const gitOps: GitOps = {
   commit,
   push,
   pull,
+  headOid,
 };
 
 // ── Helpers used by Phase 3 conflict tier 3 ────────────────────────────────

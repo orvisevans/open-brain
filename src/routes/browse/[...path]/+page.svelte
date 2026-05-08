@@ -108,6 +108,28 @@
     };
   });
 
+  // When the SyncEngine pulls in a HEAD-advancing change from the remote,
+  // re-read the active note from disk so the editor reflects merged content.
+  // We skip the reload if there's a pending unsaved edit — reading would
+  // clobber the user's in-flight changes; they'll see the merged version
+  // after their save reaches the next pull cycle (which may itself become
+  // a conflict if their edit overlaps).
+  $effect(() => {
+    return syncEngine.onRemoteChange(() => {
+      const current = path;
+      if (current === undefined) return;
+      if (pendingSave !== undefined) return;
+      void (async () => {
+        try {
+          const next = await vault.readRaw(current);
+          if (next !== content) content = next;
+        } catch (error: unknown) {
+          logError('browse-detail/remote-change-read', { path: current, error });
+        }
+      })();
+    });
+  });
+
   function handleChange(next: string): void {
     const current = path;
     if (current === undefined) return;

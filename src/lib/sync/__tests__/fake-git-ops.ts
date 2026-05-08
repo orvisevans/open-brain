@@ -21,6 +21,9 @@ export interface FakeGitOps extends GitOps {
   pullImpl: (token: string, author: GitAuthor) => Promise<PullResult>;
   stageImpl: (paths: NotePath[]) => Promise<void>;
   commitImpl: (message: string, author: GitAuthor) => Promise<string>;
+  // Mutable HEAD oid the engine reads via headOid(). Tests bump this between
+  // pulls to simulate remote-advancing merges.
+  currentHead: string | undefined;
 }
 
 export function createFakeGitOps(): FakeGitOps {
@@ -34,6 +37,7 @@ export function createFakeGitOps(): FakeGitOps {
 
   const ops: FakeGitOps = {
     calls,
+    currentHead: 'oid-initial',
     pushImpl: () => Promise.resolve(),
     pullImpl: () => Promise.resolve({ kind: 'up-to-date' as const }),
     stageImpl: () => Promise.resolve(),
@@ -58,6 +62,7 @@ export function createFakeGitOps(): FakeGitOps {
       calls.pull.push({ token, author });
       return ops.pullImpl(token, author);
     },
+    headOid: () => Promise.resolve(ops.currentHead),
   };
 
   return ops;

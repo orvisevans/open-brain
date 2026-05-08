@@ -93,6 +93,9 @@ describe('SyncEngine', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {
       // Silence engine-level error logs for negative-path tests.
     });
+    vi.spyOn(console, 'warn').mockImplementation(() => {
+      // Silence the engine's diagnostic pull/push logs.
+    });
   });
 
   describe('debounced commit + push', () => {
@@ -235,6 +238,59 @@ describe('SyncEngine', () => {
       ops.pullImpl = () => Promise.resolve({ kind: 'merged' as const });
       await engine.pull();
       expect(engine.status.value.kind).toBe('idle');
+    });
+  });
+
+  describe('onRemoteChange()', () => {
+    it('fires when pull advances HEAD', async () => {
+      const { engine, ops } = createHarness();
+      const events: number[] = [];
+      engine.onRemoteChange(() => events.push(1));
+
+      // Default pullImpl returns up-to-date; advance HEAD before the next call
+      // to simulate a real merge landing.
+      ops.pullImpl = () => {
+        ops.currentHead = 'oid-after';
+        return Promise.resolve({ kind: 'merged' as const });
+      };
+      await engine.pull();
+      expect(events).toHaveLength(1);
+    });
+
+    it('does not fire when pull is a no-op (HEAD unchanged)', async () => {
+      const { engine, ops } = createHarness();
+      const events: number[] = [];
+      engine.onRemoteChange(() => events.push(1));
+
+      // pullImpl returns up-to-date and leaves HEAD untouched.
+      ops.pullImpl = () => Promise.resolve({ kind: 'up-to-date' as const });
+      await engine.pull();
+      expect(events).toHaveLength(0);
+    });
+
+    it('fires on conflict outcome (working tree was rewritten with markers)', async () => {
+      const { engine, ops } = createHarness();
+      const events: number[] = [];
+      engine.onRemoteChange(() => events.push(1));
+      ops.pullImpl = () =>
+        Promise.resolve({ kind: 'conflict' as const, conflictPaths: ['notes/x.md'] });
+      await engine.pull();
+      expect(events).toHaveLength(1);
+    });
+
+    it('returns an unsubscribe function', async () => {
+      const { engine, ops } = createHarness();
+      const events: number[] = [];
+      const unsubscribe = engine.onRemoteChange(() => events.push(1));
+      ops.pullImpl = () => {
+        ops.currentHead = `oid-${String(events.length)}`;
+        return Promise.resolve({ kind: 'merged' as const });
+      };
+      await engine.pull();
+      expect(events).toHaveLength(1);
+      unsubscribe();
+      await engine.pull();
+      expect(events).toHaveLength(1);
     });
   });
 

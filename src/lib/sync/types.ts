@@ -38,6 +38,11 @@ export interface PullResult {
 // Listener callback for SyncEngine status changes.
 export type SyncListener = (status: SyncStatus) => void;
 
+// Listener fired after a pull that actually advanced HEAD (i.e. brought
+// new commits in from the remote). Consumers that hold cached file
+// contents (the editor page) should re-read from disk.
+export type RemoteChangeListener = () => void;
+
 // Public surface of the engine. Declared in `types.ts` so `index.ts` can
 // re-export it without forming a cycle through `engine.ts`.
 export interface SyncEngine {
@@ -51,6 +56,11 @@ export interface SyncEngine {
   markResolved(path: NotePath): void;
   /** Subscribe to status changes. Returns an unsubscribe function. */
   subscribe(listener: SyncListener): () => void;
+  /**
+   * Subscribe to "the working tree was updated by a pull" events. Fires only
+   * when a pull actually advances HEAD; doesn't fire for no-op pulls.
+   */
+  onRemoteChange(listener: RemoteChangeListener): () => void;
 }
 
 export interface GitOps {
@@ -68,4 +78,7 @@ export interface GitOps {
   // Fetch + merge from origin into the current branch. Returns a structured
   // result so the engine can dispatch to the conflict tiers.
   pull(token: string, author: GitAuthor): Promise<PullResult>;
+  // Resolve the current HEAD commit oid (or undefined when no repo cloned).
+  // Used by the engine to detect whether a pull actually advanced HEAD.
+  headOid(): Promise<string | undefined>;
 }
