@@ -1,10 +1,12 @@
 // Public Vault API. Production callers import from `$lib/vault`; tests
 // instantiate `createVault` directly with an in-memory FsLike shim.
 
+import { logError } from '../log';
 import { syncEngine } from '../sync';
 import { fs as sharedFs } from '../sync/git';
 
 import type { FsLike } from './fs-like';
+import type { NotePath } from './types';
 import { createVault, type Vault } from './vault';
 
 export type { Note, NotePath, ParsedMarkdown, WikilinkReference } from './types';
@@ -21,11 +23,30 @@ export type { Vault, VaultOptions } from './vault';
 // into our module's public surface.
 const promisesFs = sharedFs.promises as unknown as FsLike;
 
+// Fan-out for vault writes. The sync engine subscribes here (commit/push);
+// the memory pipeline subscribes too (embedding queue). Tests don't use
+// this — they construct their own vault via `createVault`.
+const changeListeners = new Set<(path: NotePath) => void>();
+
+export function subscribeToVaultChanges(listener: (path: NotePath) => void): () => void {
+  changeListeners.add(listener);
+  return () => changeListeners.delete(listener);
+}
+
 export const vault: Vault = createVault(promisesFs, {
-  // Notify the sync engine on every successful write so the debounced
-  // commit/push pipeline picks the path up. See IMPLEMENTATION-PLAN
-  // 2026-05-05 §10 entry on the vault → sync notification mechanism.
   onChange: (path) => {
-    syncEngine.notifyChange(path);
+    for (const listener of changeListeners) {
+      try {
+        listener(path);
+      } catch (error: unknown) {
+        logError('vault/change-listener', { path, error });
+      }
+    }
   },
+});
+
+// The sync engine is always the first subscriber. We register here at module
+// evaluation so callers don't need to remember to wire it up.
+subscribeToVaultChanges((path) => {
+  syncEngine.notifyChange(path);
 });

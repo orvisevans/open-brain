@@ -4,6 +4,7 @@
 
   import { initSession, getValidAccessToken } from '$lib/auth/session';
   import { logError } from '$lib/log';
+  import { bootstrapMemory, filterSidecarConflicts } from '$lib/memory';
   import { auth, model, network, repo } from '$lib/state.svelte';
   import { syncEngine, type SyncStatus } from '$lib/sync';
   import { getStoredRepo } from '$lib/sync/repo-storage';
@@ -93,14 +94,22 @@
     return page.url.pathname === path || page.url.pathname.startsWith(`${path}/`);
   }
 
+  // Bootstrap the memory pipeline once on mount: hydrate the embedding queue
+  // from IndexedDB, start user-activity gates, and subscribe to vault writes.
+  $effect(() => {
+    bootstrapMemory();
+  });
+
   // Live sync status — subscribed once, surfaced through this rune so the
   // status bar re-renders on every transition. The engine emits its current
   // value synchronously on subscribe, so `syncStatus` is initialised before
-  // the first paint.
-  let syncStatus = $state<SyncStatus>(syncEngine.status.value);
+  // the first paint. Sidecar paths are filtered out before display: the
+  // sidecar conflict resolver (started via `bootstrapMemory`) handles them
+  // programmatically.
+  let syncStatus = $state<SyncStatus>(filterSidecarConflicts(syncEngine.status.value));
   $effect(() => {
     return syncEngine.subscribe((next) => {
-      syncStatus = next;
+      syncStatus = filterSidecarConflicts(next);
     });
   });
 

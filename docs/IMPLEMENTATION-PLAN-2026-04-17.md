@@ -279,42 +279,46 @@ Spec deltas after Phase 3 review (see §10 2026-05-09 for the underlying experie
 - **Don't change the queue/debounce assumptions.** The Phase 2/3 stack of debounces (3s editor → 5s sync) is working. Phase 4's plan adds a 30s embedding queue and the lazy LLM extraction queue on top — those are independent timers gated on idle, not stacked with sync. So total time-from-keystroke-to-embedded is ~3s editor + ~30s embed = ~33s. Acceptable.
 
 ### Embedder (`src/lib/embed/`)
-- [ ] Wrapper around `@xenova/transformers` with `all-MiniLM-L6-v2`
-- [ ] `embed(texts: string[]): Promise<Float32Array[]>`
-- [ ] Batched (max 8 per call)
-- [ ] Chunking helper: split markdown body on `##` headings; fallback to 400-token window
+- [x] Wrapper around `@xenova/transformers` with `all-MiniLM-L6-v2`. Singleton pipeline with a `setEmbedderForTest` seam so tests don't pull the 25 MB ONNX weights.
+- [x] `embed(texts: string[]): Promise<Float32Array[]>` — exposed as `embedBatch`; the original single-string `embed(text)` stays for the walking-skeleton page. Both copy slices out of the pipeline buffer so callers don't hold views into shared memory.
+- [x] Batched (max 8 per call). The queue feeds chunks at the cap; the embedder enforces it as defence-in-depth.
+- [x] Chunking helper: split markdown body on `##` headings; fallback to 400-token window. Sentence-level fallback below paragraph; word-level hard chop when even a single sentence blows the budget. Heading prefix is preserved on every sub-window. `countTokens` uses the model's tokenizer in production, deterministic stub in tests.
 
 ### Sidecar I/O (`src/lib/memory/sidecar.ts`)
-- [ ] `readSidecar(notePath)` from `.memory/<path>` via Vault
-- [ ] `writeSidecar(sidecar)` — markdown with YAML frontmatter per [ARCHITECTURE](./ARCHITECTURE-2026-04-17.md) §3
-- [ ] `schema_version: 1` for MVP; reject/rebuild if mismatch
-- [ ] Embeddings stored inline in frontmatter as base64-encoded `Float32Array`s
+- [x] `readSidecar(notePath)` from `.memory/<path>` via Vault. Returns `undefined` for missing or unparseable files (the queue regenerates).
+- [x] `writeSidecar(sidecar)` — frontmatter (`schema_version`, `source`, `source_hash`, `extracted_at`, `embedding_model`, optional `extraction_model`) + JSON code block holding embeddings/summary/etc. **NB:** the on-disk format diverges from architecture §3's "embeddings inline in frontmatter" — see Decision Log 2026-05-09 for the rationale.
+- [x] `schema_version: 1` for MVP; mismatched schema returns `undefined` so the queue rebuilds.
+- [x] Embeddings stored as base64-encoded `Float32Array.buffer` blobs. Round-trip is bit-exact (test asserts).
 
 ### Hash invalidation
-- [ ] `hashContent(content)` via Web Crypto `subtle.digest('SHA-256', ...)` → hex
-- [ ] `isSidecarFresh(note, sidecar)` → boolean
+- [x] `hashContent(content)` via Web Crypto `subtle.digest('SHA-256', ...)` → hex. Same API works in browser + Node.
+- [x] `isSidecarFresh(noteHash, sidecar)` → boolean. Schema version mismatch also returns false.
 
 ### Queues (`src/lib/memory/queues.ts`)
-- [ ] **Embedding queue** — debounced (30s idle after last edit)
-    - [ ] Persisted to `openbrain-queues` IndexedDB store so it survives reload
-    - [ ] Processes: read note → chunk → embed changed chunks → write sidecar
-- [ ] **LLM extraction queue** — lazy
-    - [ ] Idle-gated: only runs when no user input for 2min (listen to `pointermove`/`keydown`)
-    - [ ] Battery-gated on mobile: check `navigator.getBattery()`; pause if `<50%` and not charging
-    - [ ] Processes: read note → ask Gemma for `{summary, entities, facts, topics}` via a fixed prompt → write sidecar
-    - [ ] **`GpuLease`** single-slot lock shared with LLMRuntime so chat takes priority
-- [ ] "Refresh memory" button in Memory tab triggers queue flush regardless of gates
+- [x] **Embedding queue** — debounced (30s idle after last edit). `whenIdle()` exposed for tests; production uses `flush()` on the Refresh button.
+    - [x] Persisted to `openbrain-queues` IndexedDB store so it survives reload (`createIndexedDatabaseQueueStorage`). `noopQueueStorage` falls back when IndexedDB is absent (Node tests).
+    - [x] Processes: read note → hash → load existing sidecar → skip if hash matches → chunk → batch-embed → write sidecar. Preserves prior LLM-extracted fields (`summary`, `entities`, `facts`, `topics`, `links`) so re-embedding doesn't drop extraction output.
+- [x] **LLM extraction queue** — lazy
+    - [x] Idle-gated: 2-minute window since last `pointermove` / `keydown` / `touchstart`.
+    - [x] Battery-gated: `navigator.getBattery()`; pause if `<50%` and not charging. Desktops without `getBattery` are treated as "OK".
+    - [x] Processes: read note → ask the loaded LLM for `{summary, entities, facts, topics}` via the fixed prompt in `extract.ts` → parse JSON → write sidecar.
+    - [x] **`GpuLease`** single-slot lock — `acquire('chat')` takes priority via `tryAcquire`; queue's `tryDrain` aborts when `isContended()`. Chat side will reuse this lock in Phase 5.
+- [x] "Refresh memory" button in Memory tab triggers queue flush regardless of gates. **Exception:** extraction `flush()` short-circuits to `paused: 'no-llm'` when no model is loaded — bypassing gates can't manufacture an LLM.
 
 ### Memory tab UI
-- [ ] List of notes with their sidecar status (fresh / stale / missing / queued)
-- [ ] Click a note → see its extracted summary, entities, facts, topics, links
-- [ ] Queue status chip: `3 notes pending index`
-- [ ] "Refresh memory" button
+- [x] List of notes with their sidecar status (fresh / stale / missing / queued / error). Glyphs: ●  ◐  ○  ◇  !
+- [x] Click a note → see its extracted summary, entities, facts, topics, plus an embeddings summary (chunk count + dims + model id). Links are stored on the sidecar but not yet rendered (Phase 5's retrieval UI will need them).
+- [x] Queue status chip: e.g. `2 embedding · 3 summary (no-llm)`. Pause reason is shown when the extraction queue is paused.
+- [x] "Refresh memory" button — enqueues every non-fresh note before flushing, so the button works even when the queue is empty (e.g. notes that were created in a previous session before the Memory tab existed).
+
+### Sidecar conflicts (Phase 4 spec delta)
+- [x] `filterStatus(SyncStatus)` removes sidecar paths from the user-facing conflict UI; collapses to `idle` if no notes remain.
+- [x] `createSidecarConflictResolver` subscribes to `syncEngine` status, parses diff3 markers in conflicted sidecars, and writes back whichever side has the later `extractedAt`. If neither side parses, blanks the sidecar and re-enqueues the source note for embedding regeneration.
 
 ### Exit criteria
-- [ ] Creating/editing a note generates a sidecar within 30s (embeddings) and eventually gets LLM-extracted when idle.
-- [ ] Sidecars round-trip through sync (so a second device inherits them).
-- [ ] `npm run check` green
+- [x] Creating/editing a note generates a sidecar within 30s (embeddings). Verified manually 2026-05-09 in Chrome: typed a 2-section note in Browse, observed the new note transition `missing → queued → fresh` in the Memory tab and reach `synced Xs ago` in the status bar (sidecar committed + pushed to GitHub via the existing sync engine). LLM extraction is gated on a loaded model; verified the gate trips correctly (`paused: no-llm` chip).
+- [x] Sidecars round-trip through sync. Sidecar writes fire the vault → sync change listener exactly like notes do — verified end-to-end (sync status transitioned to `synced Xs ago` after each embedding run with no extra wiring). The sidecar conflict resolver handles the inverse direction (auto-resolves remote sidecar conflicts without a picker).
+- [x] `npm run check` green — 106 tests across 15 files, types/lint/format all clean.
 - [ ] Review Phase 5's tasks against what you learned about retrieval quality and sidecar shape; adjust top-K default, chunking strategy, or context budget if needed
 
 ---
@@ -533,6 +537,13 @@ Record non-obvious decisions made during implementation that future sessions sho
   7. **`abortOnConflict: false` on `pull`** is documented in isomorphic-git's docs but missing from its `.d.ts` (the type only lists it on `merge`). Used `@ts-expect-error` with a comment pointing at the upstream gap; remove when isomorphic-git ships an updated typings.
   8. **Tier 2 resolver re-parses the live document on click** rather than trusting the cached `ConflictHunk` offsets. Between paint and click, another resolution may have shifted the offsets — re-parsing is cheap (≤ a few KB) and avoids bugs from stale offsets.
 - `2026-05-08` — **Auth refresh for long-lived sessions.** GitHub App user tokens from device flow expire after 8 hours; the refresh token lives 6 months. The first cut stored only the access token, so reopening the tab the next day landed on `✓ Signed in` + `401 Unauthorized` on every API call. Reshape: `storage.ts` persists an `AuthBundle` ({ accessToken, refreshToken, accessExpiresAt, refreshExpiresAt }); `device-flow.ts` captures `expires_in` + `refresh_token_expires_in` and exposes a `refreshAccessToken` (POST `grant_type=refresh_token`). New `session.ts` is the in-memory bundle owner: `initSession` hydrates on layout mount, refreshes proactively when <5min remain, and clears the session if the refresh token itself dies. `getValidAccessToken` is single-flight (concurrent callers join the same exchange — GitHub rotates the refresh token on every refresh, so parallel requests would invalidate each other). Layout polls `getValidAccessToken` every 60s as a refresh trigger; setup uses it before clone.
+- `2026-05-09` — **Phase 4 implementation notes (deltas from the spec).**
+  1. **Sidecar on-disk format diverges from architecture §3.** The architecture sketched embeddings "inline in frontmatter as base64". In practice, multi-chunk sidecars + the existing handwritten frontmatter parser would need a richer YAML implementation (nested arrays of objects). Instead, the sidecar uses a thin frontmatter (`schema_version`, `source`, `source_hash`, `extracted_at`, `embedding_model`, optional `extraction_model`) and stuffs the bulk (`embeddings[]`, `summary`, `entities`, etc.) into a fenced ```json``` body. This is machine-only — sidecars are never user-edited — so JSON is fine, and pretty-printing keeps git diffs legible. Conflict auto-resolution doesn't depend on the format being merge-friendly because we always pick whichever side has the later `extractedAt`.
+  2. **Vault → memory wiring uses a fan-out subscription**, not a chained `onChange`. `vault/index.ts` exposes `subscribeToVaultChanges(fn)` and registers the SyncEngine as the first subscriber on module evaluation. `bootstrapMemory()` (called from the layout) registers the second subscriber that calls `notifyMemoryOfChange(path)`. Avoids a `vault → memory → vault` import cycle: the memory module never has to be imported by `$lib/vault`.
+  3. **`whenIdle()` exposed on both queues.** Tests need a deterministic await — the timer-fire path is `void runOnce()` (fire-and-forget), and a fixed-count microtask flush wasn't reliable across the deep promise chains in `processPath` (read → hash → readSidecar → chunkMarkdown → embedBatch → writeSidecar). Each queue tracks its in-flight drain so `flush()` and `whenIdle()` resolve only after the current run completes.
+  4. **Extraction `flush()` respects "no LLM loaded".** The plan said "Refresh memory triggers queue flush regardless of gates" — but bypassing the no-LLM gate just produces N copies of `Error: LLM model not loaded` in the console. `flush()` short-circuits to `paused: 'no-llm'` when `modelId() === undefined`. The `forced` flag still bypasses user-busy and battery gates as intended.
+  5. **`fakeCountTokens` in tests stubs the tokenizer with `text.split(/\s+/).length`.** Roughly within an order of magnitude of MiniLM's tokenization (English words tend to be 1–2 tokens). Accurate enough for chunking-logic tests; a deterministic fake (rather than the real ONNX tokenizer) keeps the test runner pure-Node.
+  6. **`Float32Array` round-trip uses `String.fromCodePoint` + `String#codePointAt`** instead of `fromCharCode` / `charCodeAt` (lint preference: `unicorn/prefer-code-point`). The semantics are identical for the byte values 0–255 we round-trip; both flavours map directly through `btoa`/`atob`.
 - `2026-05-09` — **Phase 3 conflict-resolution fixes (post-manual-test).** Manual browser testing of the two-device conflict flow surfaced a chain of issues that all needed fixing for resolution to actually work end-to-end:
   1. **Push-rejection auto-recovery.** Two browsers committing different changes to the same base produced a non-fast-forward push rejection on the second, surfaced as a generic `! sync error` until the next 30s pull cycle. The engine now auto-recovers: on `PushResult: rejected-non-fast-forward`, it triggers a pull (which auto-merges remote into the local commit) and immediately re-pushes. Clean recovery is invisible to the user; conflicts during recovery surface as `! conflict` (existing flow). New `PushResult` type in `types.ts`.
   2. **`pull()` silently dropped `mergeDriver` and `abortOnConflict`.** isomorphic-git 1.37's `pull()` wrapper destructures only a fixed set of args; passing `mergeDriver`/`abortOnConflict` was a silent no-op, so MergeConflictError was thrown WITHOUT writing markers to the workdir. We now compose `fetch()` + `merge()` + `checkout()` ourselves so the merge driver actually flows through. (`merge()` accepts both options on its public API.)
