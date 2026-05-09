@@ -23,6 +23,7 @@
   import { applyProposal, type Proposal } from '$lib/chat/proposal';
   import ProposalCard from '$lib/chat/proposal/ProposalCard.svelte';
   import {
+    configureOrganize,
     dispatch as dispatchSlash,
     extractSlashFromResponse,
     loadLlmEmitEnabled,
@@ -33,6 +34,12 @@
     type ParsedCommand,
     type SlashContext,
   } from '$lib/chat/slash';
+  import {
+    isReviewDue,
+    loadLastReviewAt,
+    recordReview,
+    yesterdayHasContent,
+  } from '$lib/chat/daily-review';
   import { suggestCommand } from '$lib/chat/intent-suggester';
   import {
     cancelSpeech,
@@ -49,6 +56,28 @@
   import { vault } from '$lib/vault';
 
   registerCoreHandlers();
+  configureOrganize(
+    {
+      modelLoaded: () => model.loaded,
+      complete: async (systemPrompt, userPrompt) => {
+        let buffer = '';
+        await streamChat(
+          [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          (token) => {
+            buffer += token;
+          },
+        );
+        return buffer;
+      },
+    },
+    {
+      readRaw: (path) => vault.readRaw(path),
+      writeNote: (path, content) => vault.writeNote(path, content),
+    },
+  );
 
   // ── Session state ────────────────────────────────────────────────────────
 
@@ -94,6 +123,10 @@
   // write-style requests. Default OFF until the JSON-vs-slash bench lands.
   let llmEmitEnabled = $state(loadLlmEmitEnabled());
 
+  // Phase 5.5: daily review prompt. Set on mount when > 24h since last
+  // review AND yesterday's daily journal has substantive content.
+  let reviewSuggestionPath = $state<string | undefined>(undefined);
+
   // Hydrate the most recent session on mount; create a fresh one if none.
   $effect(() => {
     void (async () => {
@@ -109,7 +142,8 @@
   });
 
   // Load Phase 5.5 metadata once on mount: command stats (frecency) +
-  // the mention index (paths only — title/aliases are a v2 enhancement).
+  // the mention index (paths only — title/aliases are a v2 enhancement) +
+  // the daily-review status.
   $effect(() => {
     void (async () => {
       try {
@@ -121,6 +155,17 @@
         mentionPaths = await vault.listNotes();
       } catch (error: unknown) {
         logError('chat/load-mention-paths', { error });
+      }
+      try {
+        const lastAt = await loadLastReviewAt(chatVault);
+        if (isReviewDue(lastAt, Date.now())) {
+          const yesterday = await yesterdayHasContent(chatVault, new Date());
+          if (yesterday.hasContent) {
+            reviewSuggestionPath = yesterday.path;
+          }
+        }
+      } catch (error: unknown) {
+        logError('chat/load-daily-review', { error });
       }
     })();
   });
@@ -287,6 +332,31 @@
     saveLlmEmitEnabled(llmEmitEnabled);
   }
 
+  function acceptDailyReview(): void {
+    const path = reviewSuggestionPath;
+    if (path === undefined) return;
+    input = `/organize @${path}`;
+    void (async () => {
+      await recordReview(chatVault, new Date()).catch((error: unknown) => {
+        logError('chat/record-review', { error });
+      });
+    })();
+    reviewSuggestionPath = undefined;
+    setTimeout(() => {
+      void send();
+    }, 0);
+  }
+
+  function dismissDailyReview(): void {
+    const at = new Date();
+    void (async () => {
+      await recordReview(chatVault, at).catch((error: unknown) => {
+        logError('chat/record-review', { error });
+      });
+    })();
+    reviewSuggestionPath = undefined;
+  }
+
   async function dispatchLlmEmittedSlash(
     parsed: ParsedCommand,
     sourceTurnId: string,
@@ -313,6 +383,8 @@
       const result = await dispatchSlash(parsed, context);
       if (result.kind === 'proposal') {
         pendingProposals = [...pendingProposals, result.proposal];
+      } else if (result.kind === 'proposals') {
+        pendingProposals = [...pendingProposals, ...result.proposals];
       }
     } catch (error: unknown) {
       logError('chat/llm-slash-dispatch', { error });
@@ -372,6 +444,18 @@
       };
       working = await appendMessage(chatVault, working, sys);
       session = working;
+    } else if (result.kind === 'proposals') {
+      pendingProposals = [...pendingProposals, ...result.proposals];
+      if (result.summary !== undefined) {
+        const sys: ChatMessage = {
+          id: cryptoRandomId(),
+          role: 'system',
+          content: result.summary,
+          timestamp: Date.now(),
+        };
+        working = await appendMessage(chatVault, working, sys);
+        session = working;
+      }
     } else {
       pendingProposals = [...pendingProposals, result.proposal];
     }
@@ -617,6 +701,18 @@
   </aside>
 
   <section class="conversation">
+    {#if reviewSuggestionPath !== undefined}
+      <div class="daily-review" role="region" aria-label="Daily review suggestion">
+        <span class="daily-review-text">
+          You captured stuff in <code>{reviewSuggestionPath}</code> yesterday. Want me to organize it
+          into separate notes?
+        </span>
+        <div class="daily-review-actions">
+          <button class="apply-review" onclick={acceptDailyReview}>Organize</button>
+          <button class="dismiss-review" onclick={dismissDailyReview}>Skip for today</button>
+        </div>
+      </div>
+    {/if}
     <div class="messages" role="log" aria-live="polite" aria-label="Chat messages">
       {#each visibleMessages as message (message.id)}
         <div class="message {message.role}">
@@ -915,6 +1011,46 @@
     flex-direction: column;
     gap: 0.4rem;
     position: relative;
+  }
+
+  .daily-review {
+    border: 1px solid var(--color-accent);
+    border-radius: 4px;
+    padding: 0.6rem 0.75rem;
+    margin-bottom: 0.6rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    background: color-mix(in srgb, var(--color-bg), var(--color-accent) 6%);
+  }
+
+  .daily-review-text {
+    flex: 1;
+    min-width: 12rem;
+  }
+
+  .daily-review-actions {
+    display: flex;
+    gap: 0.4rem;
+  }
+
+  .daily-review button {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    padding: 0.25rem 0.6rem;
+    background: transparent;
+    border: 1px solid var(--color-border);
+    color: var(--color-fg);
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  .daily-review button.apply-review {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
   }
 
   .popover-anchor {

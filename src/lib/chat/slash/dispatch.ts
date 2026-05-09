@@ -37,6 +37,9 @@ export interface SlashContext {
 
 export type DispatchResult =
   | { kind: 'proposal'; proposal: Proposal }
+  // /organize and other multi-extraction commands surface several proposals
+  // at once. Each renders its own card; the user accepts/discards individually.
+  | { kind: 'proposals'; proposals: Proposal[]; summary?: string }
   | { kind: 'error'; message: string };
 
 export type SlashHandler = (cmd: ParsedCommand, context: SlashContext) => Promise<DispatchResult>;

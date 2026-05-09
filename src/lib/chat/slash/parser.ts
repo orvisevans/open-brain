@@ -16,6 +16,7 @@ export type ParsedCommand =
   | { kind: 'note'; title: string; body?: string; tags?: string[] }
   | { kind: 'list'; name: string; item?: string }
   | { kind: 'append'; target: NotePath; body: string; bullet: boolean }
+  | { kind: 'organize'; target: NotePath }
   | { kind: 'unknown'; raw: string };
 
 export function parseSlashCommand(input: string): ParsedCommand | undefined {
@@ -44,6 +45,9 @@ export function parseSlashCommand(input: string): ParsedCommand | undefined {
     }
     case 'append': {
       return parseAppend(argumentsRaw);
+    }
+    case 'organize': {
+      return parseOrganize(argumentsRaw, trimmed);
     }
     case '': {
       return { kind: 'unknown', raw: trimmed };
@@ -137,6 +141,14 @@ function parseList(arguments_: string): ParsedCommand {
     name: trimmed.slice(0, firstSpace),
     item: trimmed.slice(firstSpace + 1).trim(),
   };
+}
+
+function parseOrganize(arguments_: string, trimmed: string): ParsedCommand {
+  const targetMatch = MATCH_AT_TOKEN.exec(arguments_);
+  if (targetMatch === null) {
+    return { kind: 'unknown', raw: trimmed };
+  }
+  return { kind: 'organize', target: mentionToPath(targetMatch[1] ?? '') };
 }
 
 function parseAppend(arguments_: string): ParsedCommand {

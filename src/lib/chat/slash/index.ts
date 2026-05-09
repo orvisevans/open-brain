@@ -9,6 +9,7 @@ import { appendHandler } from './handlers/append';
 import { journalHandler } from './handlers/journal';
 import { listHandler } from './handlers/list';
 import { noteHandler } from './handlers/note';
+import { organizeHandler } from './handlers/organize';
 import { saveHandler } from './handlers/save';
 import type { ParsedCommand } from './parser';
 
@@ -22,6 +23,12 @@ export {
   saveLlmEmitEnabled,
   SLASH_EMIT_SYSTEM_INSTRUCTION,
 } from './llm-emit';
+export {
+  configureOrganize,
+  resetOrganizeForTest,
+  type OrganizeLlmRunner,
+  type OrganizeSidecarVault,
+} from './handlers/organize';
 
 const CORE_HANDLERS: { kind: ParsedCommand['kind']; handler: SlashHandler }[] = [
   { kind: 'save', handler: saveHandler },
@@ -29,6 +36,7 @@ const CORE_HANDLERS: { kind: ParsedCommand['kind']; handler: SlashHandler }[] = 
   { kind: 'journal', handler: journalHandler },
   { kind: 'list', handler: listHandler },
   { kind: 'append', handler: appendHandler },
+  { kind: 'organize', handler: organizeHandler },
 ];
 
 let coreRegistered = false;
