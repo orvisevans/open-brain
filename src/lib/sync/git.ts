@@ -61,14 +61,27 @@ interface GitDefaults {
   dir: string;
   corsProxy: string;
   onAuth?: () => { username: string; password: string };
+  headers?: Record<string, string>;
 }
 
 function gitDefaults(token?: string): GitDefaults {
   const base: GitDefaults = { fs, http, dir: REPO_DIR, corsProxy: CORS_PROXY };
   if (token !== undefined) {
     base.onAuth = () => ({ username: 'x-access-token', password: token });
+    // Send HTTP Basic auth on the FIRST request rather than waiting for
+    // the server to 401-and-retry. Without this, every smart-HTTP op
+    // produces a visible 401 on /info/refs (isomorphic-git's protocol
+    // does an unauth probe by design and retries with onAuth credentials
+    // after seeing the 401). With it, the first request is already
+    // authenticated and we skip the noise. onAuth is still kept as a
+    // fallback for any edge cases where the upfront header isn't honoured.
+    base.headers = { Authorization: `Basic ${basicAuth('x-access-token', token)}` };
   }
   return base;
+}
+
+function basicAuth(username: string, password: string): string {
+  return globalThis.btoa(`${username}:${password}`);
 }
 
 /**
