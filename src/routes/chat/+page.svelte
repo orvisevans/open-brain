@@ -29,6 +29,13 @@
     type ParsedCommand,
     type SlashContext,
   } from '$lib/chat/slash';
+  import {
+    cancelSpeech,
+    isTtsAvailable,
+    loadTtsEnabled,
+    saveTtsEnabled,
+    speak,
+  } from '$lib/chat/tts';
   import { logError } from '$lib/log';
   import { streamChat } from '$lib/llm/runtime';
   import { assembleContext, retrieve } from '$lib/memory';
@@ -63,6 +70,12 @@
   let mentionStart = $state<number | undefined>(undefined);
   let mentionMatches = $state<MentionMatch[]>([]);
   let mentionSelectedIndex = $state(0);
+
+  // Phase 5.5: TTS toggle for the assistant's reply. Voice in (mic) is
+  // separate; this is purely "speak the answer aloud after streaming
+  // finishes". Per-device preference (different speakers, headphones, etc.).
+  const ttsAvailable = isTtsAvailable();
+  let ttsEnabled = $state(loadTtsEnabled());
 
   // Hydrate the most recent session on mount; create a fresh one if none.
   $effect(() => {
@@ -125,6 +138,8 @@
     const text = input.trim();
     const current = session;
     if (text === '' || isStreaming || current === undefined) return;
+    // Cut off any in-flight TTS the moment a new turn begins.
+    cancelSpeech();
 
     // Phase 5.5: slash commands bypass the LLM entirely. Capture and write
     // operations don't need a model loaded.
@@ -196,6 +211,9 @@
       session = working;
       // Update sidebar listing.
       allSessions = [working, ...allSessions.filter((entry) => entry.id !== working.id)];
+      if (ttsEnabled && accumulated.trim() !== '') {
+        speak(accumulated);
+      }
     } catch (error: unknown) {
       logError('chat/send', { error });
     } finally {
@@ -204,6 +222,12 @@
       streamingCitations = [];
       phase = 'idle';
     }
+  }
+
+  function toggleTts(): void {
+    ttsEnabled = !ttsEnabled;
+    saveTtsEnabled(ttsEnabled);
+    if (!ttsEnabled) cancelSpeech();
   }
 
   // ── Slash commands ──────────────────────────────────────────────────────
@@ -602,6 +626,18 @@
             {isListening ? '◼' : '🎙'}
           </button>
         {/if}
+        {#if ttsAvailable}
+          <button
+            class="tts"
+            class:enabled={ttsEnabled}
+            onclick={toggleTts}
+            aria-label={ttsEnabled ? 'Disable spoken replies' : 'Enable spoken replies'}
+            title={ttsEnabled ? 'Disable spoken replies' : 'Enable spoken replies'}
+            aria-pressed={ttsEnabled}
+          >
+            {ttsEnabled ? '🔊' : '🔇'}
+          </button>
+        {/if}
         <button
           class="send"
           onclick={() => {
@@ -801,7 +837,8 @@
   }
 
   button.send,
-  button.mic {
+  button.mic,
+  button.tts {
     font-family: var(--font-mono);
     font-size: 0.875rem;
     padding: 0.5rem 0.75rem;
@@ -813,7 +850,8 @@
     align-self: flex-end;
   }
 
-  button.mic.listening {
+  button.mic.listening,
+  button.tts.enabled {
     background: var(--color-accent);
     color: var(--color-bg, var(--color-fg));
   }
