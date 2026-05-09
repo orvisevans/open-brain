@@ -23,16 +23,22 @@
   import { applyProposal, type Proposal } from '$lib/chat/proposal';
   import ProposalCard from '$lib/chat/proposal/ProposalCard.svelte';
   import {
+    configureEdit,
+    configureFind,
     configureOrganize,
+    configureRelated,
     dispatch as dispatchSlash,
     extractSlashFromResponse,
     loadLlmEmitEnabled,
+    makeProductionFindRetriever,
+    makeProductionRetriever,
     parseSlashCommand,
     registerCoreHandlers,
     saveLlmEmitEnabled,
     SLASH_EMIT_SYSTEM_INSTRUCTION,
     type ParsedCommand,
     type SlashContext,
+    type SlashLlmRunner,
   } from '$lib/chat/slash';
   import {
     isReviewDue,
@@ -56,28 +62,33 @@
   import { vault } from '$lib/vault';
 
   registerCoreHandlers();
-  configureOrganize(
-    {
-      modelLoaded: () => model.loaded,
-      complete: async (systemPrompt, userPrompt) => {
-        let buffer = '';
-        await streamChat(
-          [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-          (token) => {
-            buffer += token;
-          },
-        );
-        return buffer;
-      },
+  const sharedLlmRunner: SlashLlmRunner = {
+    modelLoaded: () => model.loaded,
+    complete: async (systemPrompt, userPrompt) => {
+      let buffer = '';
+      await streamChat(
+        [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        (token) => {
+          buffer += token;
+        },
+      );
+      return buffer;
     },
-    {
-      readRaw: (path) => vault.readRaw(path),
-      writeNote: (path, content) => vault.writeNote(path, content),
-    },
-  );
+  };
+  const sharedRetrievalVault = {
+    readRaw: (path: string) => vault.readRaw(path),
+    listNotes: () => vault.listNotes(),
+  };
+  configureOrganize(sharedLlmRunner, {
+    readRaw: (path) => vault.readRaw(path),
+    writeNote: (path, content) => vault.writeNote(path, content),
+  });
+  configureEdit(sharedLlmRunner);
+  configureRelated(makeProductionRetriever(sharedRetrievalVault));
+  configureFind(makeProductionFindRetriever(sharedRetrievalVault));
 
   // ── Session state ────────────────────────────────────────────────────────
 
@@ -386,6 +397,8 @@
       } else if (result.kind === 'proposals') {
         pendingProposals = [...pendingProposals, ...result.proposals];
       }
+      // 'message' and 'error' from LLM-emitted slashes are dropped — the
+      // assistant message itself already conveys whatever the model said.
     } catch (error: unknown) {
       logError('chat/llm-slash-dispatch', { error });
     }
@@ -435,29 +448,47 @@
       result = { kind: 'error' as const, message: 'Dispatch failed unexpectedly.' };
     }
 
-    if (result.kind === 'error') {
-      const sys: ChatMessage = {
-        id: cryptoRandomId(),
-        role: 'system',
-        content: result.message,
-        timestamp: Date.now(),
-      };
-      working = await appendMessage(chatVault, working, sys);
-      session = working;
-    } else if (result.kind === 'proposals') {
-      pendingProposals = [...pendingProposals, ...result.proposals];
-      if (result.summary !== undefined) {
+    switch (result.kind) {
+      case 'error': {
         const sys: ChatMessage = {
           id: cryptoRandomId(),
           role: 'system',
-          content: result.summary,
+          content: result.message,
           timestamp: Date.now(),
         };
         working = await appendMessage(chatVault, working, sys);
         session = working;
+        break;
       }
-    } else {
-      pendingProposals = [...pendingProposals, result.proposal];
+      case 'message': {
+        const sys: ChatMessage = {
+          id: cryptoRandomId(),
+          role: 'system',
+          content: result.content,
+          timestamp: Date.now(),
+        };
+        working = await appendMessage(chatVault, working, sys);
+        session = working;
+        break;
+      }
+      case 'proposals': {
+        pendingProposals = [...pendingProposals, ...result.proposals];
+        if (result.summary !== undefined) {
+          const sys: ChatMessage = {
+            id: cryptoRandomId(),
+            role: 'system',
+            content: result.summary,
+            timestamp: Date.now(),
+          };
+          working = await appendMessage(chatVault, working, sys);
+          session = working;
+        }
+        break;
+      }
+      case 'proposal': {
+        pendingProposals = [...pendingProposals, result.proposal];
+        break;
+      }
     }
     allSessions = [working, ...allSessions.filter((entry) => entry.id !== working.id)];
   }

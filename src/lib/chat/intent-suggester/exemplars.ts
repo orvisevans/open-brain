@@ -49,4 +49,20 @@ export const INTENT_EXEMPLARS: Record<string, readonly string[]> = {
     'continue writing in',
     'extend the note about',
   ],
+  '/edit': [
+    'change my note about',
+    'fix the typo in',
+    'update the note',
+    'remove the part about',
+    'rewrite that note to say',
+  ],
+  '/find': [
+    'where did I write about',
+    'find my notes on',
+    'do I have anything about',
+    'search for',
+  ],
+  '/related': ['what notes are similar to', 'find related notes', 'see also for'],
+  '/archive': ['archive this note', "I don't need this anymore", 'retire this'],
+  '/tag': ['tag this note with', 'add tags', 'mark this as'],
 };

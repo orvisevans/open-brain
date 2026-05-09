@@ -14,4 +14,9 @@ export const COMMAND_LIST: readonly string[] = [
   '/list',
   '/append',
   '/organize',
+  '/edit',
+  '/related',
+  '/find',
+  '/archive',
+  '/tag',
 ];

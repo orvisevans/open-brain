@@ -27,13 +27,11 @@ import { nextAvailableSlug, notePath, slugify, NOTES_DIR } from '$lib/vault/path
 import type { NotePath } from '$lib/vault/types';
 
 import type { DispatchResult, SlashContext, SlashHandler } from '../dispatch';
+import type { SlashLlmRunner } from '../llm-runner';
 
-// Caller-provided LLM runner. Production wires in `streamChat` from the
-// runtime; tests pass a stub that returns canned text.
-export interface OrganizeLlmRunner {
-  modelLoaded(): boolean;
-  complete(systemPrompt: string, userPrompt: string): Promise<string>;
-}
+// Re-export under the historic name for back-compat; the real type lives in
+// llm-runner.ts so /edit (and future LLM-backed commands) can share it.
+export type OrganizeLlmRunner = SlashLlmRunner;
 
 // Caller-provided sidecar vault (read+write). Different shape from the
 // SlashContext vault because we also need write access — slash handlers

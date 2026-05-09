@@ -40,6 +40,9 @@ export type DispatchResult =
   // /organize and other multi-extraction commands surface several proposals
   // at once. Each renders its own card; the user accepts/discards individually.
   | { kind: 'proposals'; proposals: Proposal[]; summary?: string }
+  // Read-only commands like /find return a plain message rendered as a
+  // system turn in the chat — no proposal card, no LLM turn, no write.
+  | { kind: 'message'; content: string }
   | { kind: 'error'; message: string };
 
 export type SlashHandler = (cmd: ParsedCommand, context: SlashContext) => Promise<DispatchResult>;

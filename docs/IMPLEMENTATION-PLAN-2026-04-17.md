@@ -539,6 +539,82 @@ Edits, renames, and deletes are explicitly **out of Phase 5.5**; deferred to a l
 
 ---
 
+## Phase 5.6 — Note lifecycle commands
+
+> Inserted 2026-05-09 after Phase 5.5 ship. Five chat-based slash commands extending the lifecycle past pure capture: edit, connect, surface, lifecycle. **Shipped 2026-05-09** — see tag `phase-5.6-complete`.
+
+### Direction
+
+Phase 5.5 made chat a **capture** surface. Phase 5.6 extends it to cover the rest of the note lifecycle — modifying existing notes (`/edit`), connecting them (`/related`), surfacing them (`/find`), and lifecycle states (`/archive`, `/tag`). All five flow through the same proposal-card / dispatch pipeline; none introduce new infrastructure.
+
+### Shared infrastructure
+
+- [x] `SlashLlmRunner` interface hoisted to `src/lib/chat/slash/llm-runner.ts` so `/edit` and `/organize` share the same shape (production wires `streamChat`; tests pass stubs).
+- [x] `DispatchResult` extended with a `'message'` variant for read-only commands like `/find`. Chat page renders as a system-role turn — no proposal card, no LLM turn, no write.
+- [x] `src/lib/vault/frontmatter-mutate.ts` — `setField(content, key, value)` and `addToInlineList(content, key, values)`. Updates touched fields only; preserves authored ordering, comments, and incidental whitespace. Used by `/archive` and `/tag`. 11 tests.
+
+### `/edit @path <instruction>` (`src/lib/chat/slash/handlers/edit.ts`)
+
+- [x] LLM rewrites the file in-place per the user's natural-language instruction. Returns a `replace` proposal so the diff card surfaces every changed line.
+- [x] `EDIT_SYSTEM_PROMPT` instructs the model to output the FULL revised contents only — no commentary, no fences. `stripWrappingFences` defends against models that add ```` ```markdown ```` wrappers anyway.
+- [x] Errors gracefully on: not-configured, model-not-loaded, missing source, empty rewrite, identical-output (no-op), LLM call failure.
+- [x] 8 dispatch tests + 4 fence-stripping tests.
+- _Validates the user's pain point: "I want to remove a sentence from my journal" — `/edit @journal/2026-05-08.md remove the sentence about Sarah` produces a diff card showing exactly the removed line._
+
+### `/related @path` (`src/lib/chat/slash/handlers/related.ts`)
+
+- [x] Embeddings-only — no LLM call. Reuses Phase 4 vectors via `retrieve` (k=10, filter self, take top 5).
+- [x] Proposes a `## See Also` section with `[[wikilink]]` bullets. Replaces an existing `## See Also` section instead of appending duplicates; preserves any sections that follow.
+- [x] Configurable retriever (test seam) — `configureRelatedForTest(retriever?)` for unit tests; `makeProductionRetriever(vault)` for the chat page.
+- [x] 6 handler tests + applyRelatedSection tests covering append + replace paths.
+
+### `/find <query>` (`src/lib/chat/slash/handlers/find.ts`)
+
+- [x] Embeddings-only top-N notes ranked by similarity (default 8). Returns `'message'` — chat renders an inline list, no proposal card, no LLM turn.
+- [x] Distinct from chat-with-retrieval (which burns an LLM turn) — useful for "where did I write about X?" without paying for a generated answer.
+- [x] Configurable retriever; production uses the same `retrieve` adapter pattern as `/related`.
+- [x] 4 handler tests covering hit, miss, retriever-error, and not-configured paths.
+
+### `/archive @path` (`src/lib/chat/slash/handlers/archive.ts`)
+
+- [x] Soft-archive: stamps `archived_at: <ISO>` into frontmatter. Reversible (remove the field). Preserves wikilinks (no rename). No physical move (the vault has no `unlink` API yet).
+- [x] Updates the timestamp if archived_at already exists with a different value (re-archive after content change).
+- [x] 4 dispatch tests.
+- [ ] **Filtering archived notes out of retrieval** — deferred to follow-up. Today the marker is informational; chat retrieval still surfaces archived notes.
+
+### `/tag @path <tag1> [tag2…]` (`src/lib/chat/slash/handlers/tag.ts`)
+
+- [x] Merges tags into `tags:` frontmatter list. Existing tags preserved; duplicates skipped.
+- [x] Strips a leading `#` so `/tag @notes/foo #ideas` and `/tag @notes/foo ideas` are equivalent.
+- [x] Errors when all requested tags are already present.
+- [x] 5 dispatch tests.
+
+### Parser + dispatcher updates
+
+- [x] `ParsedCommand` gains `edit`, `related`, `find`, `archive`, `tag` variants.
+- [x] Each parser surfaces a `reason` on `unknown` for missing-arg cases (consistent with the Phase 5.5 fix).
+- [x] `COMMAND_LIST` extended in command-bar/index.ts so the chip bar surfaces all 11 commands. Frecency ordering naturally sinks the new ones to the back until used.
+- [x] Intent-suggester exemplars added for each new command — natural-language phrasings ("change my note about", "find my notes on", "archive this note", "tag this with").
+
+### Chat page wiring
+
+- [x] `configureEdit`, `configureRelated`, `configureFind` invoked at chat-page boot, sharing one `SlashLlmRunner` (for /edit) and one retrieval vault (for /related, /find). Same pattern Phase 5.5 set with `configureOrganize`.
+- [x] DispatchResult dispatcher converted from else-if chain to switch on `result.kind` — adds the `'message'` branch alongside `proposal` / `proposals` / `error`.
+
+### Testing
+
+- [x] 41 new tests; total **327 across 38 files** (was 286/32 at end of Phase 5.5). All four `npm run check` stages green on Node 24.
+
+### Exit criteria
+
+- [x] All five new commands ship: `/edit`, `/related`, `/find`, `/archive`, `/tag`.
+- [x] `'message'` result variant rendered as a system message in chat.
+- [x] Frontmatter mutation preserves unrelated lines (verified by tests).
+- [x] `npm run check` green.
+- [ ] Manual end-to-end validation in Chrome with loaded model — same caveat as Phase 5.5: works in a stable tab but the MCP-tab state-sync between /setup and /chat made it flaky to demo here. Saved for the user's primary tab.
+
+---
+
 ## Phase 6 — Attachments
 
 - [ ] `AttachmentStore` interface per architecture §6

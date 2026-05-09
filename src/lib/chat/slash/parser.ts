@@ -17,6 +17,11 @@ export type ParsedCommand =
   | { kind: 'list'; name: string; item?: string }
   | { kind: 'append'; target: NotePath; body: string; bullet: boolean }
   | { kind: 'organize'; target: NotePath }
+  | { kind: 'edit'; target: NotePath; instruction: string }
+  | { kind: 'related'; target: NotePath }
+  | { kind: 'find'; query: string }
+  | { kind: 'archive'; target: NotePath }
+  | { kind: 'tag'; target: NotePath; tags: string[] }
   // `unknown` covers both "totally unrecognized" (no `reason`) and
   // "recognized command but missing required args" (with `reason`).
   // Dispatcher uses `reason` when present for a friendlier error message.
@@ -51,6 +56,21 @@ export function parseSlashCommand(input: string): ParsedCommand | undefined {
     }
     case 'organize': {
       return parseOrganize(argumentsRaw, trimmed);
+    }
+    case 'edit': {
+      return parseEdit(argumentsRaw, trimmed);
+    }
+    case 'related': {
+      return parseRelated(argumentsRaw, trimmed);
+    }
+    case 'find': {
+      return parseFind(argumentsRaw);
+    }
+    case 'archive': {
+      return parseArchive(argumentsRaw, trimmed);
+    }
+    case 'tag': {
+      return parseTag(argumentsRaw, trimmed);
     }
     case '': {
       return { kind: 'unknown', raw: trimmed };
@@ -176,6 +196,90 @@ function parseOrganize(arguments_: string, trimmed: string): ParsedCommand {
     };
   }
   return { kind: 'organize', target: mentionToPath(targetMatch[1] ?? '') };
+}
+
+function parseEdit(arguments_: string, trimmed: string): ParsedCommand {
+  const targetMatch = MATCH_AT_TOKEN.exec(arguments_);
+  if (targetMatch === null) {
+    return {
+      kind: 'unknown',
+      raw: trimmed,
+      reason: 'Provide a target and instruction: /edit @path <what to change>',
+    };
+  }
+  const target = mentionToPath(targetMatch[1] ?? '');
+  const instruction = arguments_.replace(targetMatch[0], ' ').trim();
+  if (instruction === '') {
+    return {
+      kind: 'unknown',
+      raw: trimmed,
+      reason: 'Provide an instruction: /edit @path <what to change>',
+    };
+  }
+  return { kind: 'edit', target, instruction };
+}
+
+function parseRelated(arguments_: string, trimmed: string): ParsedCommand {
+  const targetMatch = MATCH_AT_TOKEN.exec(arguments_);
+  if (targetMatch === null) {
+    return {
+      kind: 'unknown',
+      raw: trimmed,
+      reason: 'Provide a target: /related @path/to/note.md',
+    };
+  }
+  return { kind: 'related', target: mentionToPath(targetMatch[1] ?? '') };
+}
+
+function parseFind(arguments_: string): ParsedCommand {
+  const query = arguments_.trim();
+  if (query === '') {
+    return {
+      kind: 'unknown',
+      raw: '/find',
+      reason: 'Provide a query: /find <text>',
+    };
+  }
+  return { kind: 'find', query };
+}
+
+function parseArchive(arguments_: string, trimmed: string): ParsedCommand {
+  const targetMatch = MATCH_AT_TOKEN.exec(arguments_);
+  if (targetMatch === null) {
+    return {
+      kind: 'unknown',
+      raw: trimmed,
+      reason: 'Provide a target: /archive @path/to/note.md',
+    };
+  }
+  return { kind: 'archive', target: mentionToPath(targetMatch[1] ?? '') };
+}
+
+function parseTag(arguments_: string, trimmed: string): ParsedCommand {
+  const targetMatch = MATCH_AT_TOKEN.exec(arguments_);
+  if (targetMatch === null) {
+    return {
+      kind: 'unknown',
+      raw: trimmed,
+      reason: 'Provide a target and tags: /tag @path <tag1> [tag2…]',
+    };
+  }
+  const target = mentionToPath(targetMatch[1] ?? '');
+  const remaining = arguments_.replace(targetMatch[0], ' ');
+  // Tags are whitespace-separated; strip a leading `#` so `#productivity`
+  // and `productivity` both work. Skip empties.
+  const tags = remaining
+    .split(/\s+/)
+    .map((token) => token.replace(/^#/, ''))
+    .filter((token) => token !== '');
+  if (tags.length === 0) {
+    return {
+      kind: 'unknown',
+      raw: trimmed,
+      reason: 'Provide tags: /tag @path <tag1> [tag2…]',
+    };
+  }
+  return { kind: 'tag', target, tags };
 }
 
 function parseAppend(arguments_: string): ParsedCommand {
