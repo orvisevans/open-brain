@@ -1,13 +1,12 @@
-// CodeMirror extension that decorates conflict hunks with a small action
-// overlay (keep ours / keep theirs). The user can also resolve manually by
-// just editing the markers out — the decoration vanishes once the hunk
-// stops parsing.
+// CodeMirror extension that replaces conflict-marker hunks with an inline
+// picker UI. Both versions are shown side-by-side with friendly labels
+// ("Yours" / "Other device") so the user can read what they'd keep
+// without needing to remember the diff3 ours/theirs convention.
 //
-// We re-parse the document on every doc change. The cost is acceptable for
-// typical note files (≤ a few KB), and avoids the bookkeeping of an
-// incremental decoration approach.
+// The user can also resolve manually by editing the markers out — the
+// decoration vanishes once the hunk stops parsing.
 //
-// Block decorations (the action button row) can ONLY be provided via a
+// Block decorations (the picker widget) can ONLY be supplied via a
 // StateField — CodeMirror explicitly forbids ViewPlugin-supplied block
 // decorations and throws "Block decorations may not be specified via
 // plugins" at first measure. So this module derives all decorations
@@ -26,7 +25,7 @@ import {
 
 export type ConflictResolveCallback = (next: string) => void;
 
-class HunkActionsWidget extends WidgetType {
+class HunkPickerWidget extends WidgetType {
   constructor(
     private readonly hunk: ConflictHunk,
     private readonly onResolve: ConflictResolveCallback,
@@ -36,34 +35,34 @@ class HunkActionsWidget extends WidgetType {
 
   override eq(other: WidgetType): boolean {
     return (
-      other instanceof HunkActionsWidget &&
+      other instanceof HunkPickerWidget &&
       other.hunk.from === this.hunk.from &&
-      other.hunk.to === this.hunk.to
+      other.hunk.to === this.hunk.to &&
+      other.hunk.ours === this.hunk.ours &&
+      other.hunk.theirs === this.hunk.theirs
     );
   }
 
   toDOM(view: EditorView): HTMLElement {
     const wrap = document.createElement('div');
-    wrap.className = 'cm-conflict-actions';
-    wrap.setAttribute('aria-label', 'Conflict resolution actions');
+    wrap.className = 'cm-conflict-picker';
 
-    const ours = document.createElement('button');
-    ours.type = 'button';
-    ours.textContent = 'keep ours';
-    ours.addEventListener('click', (event) => {
-      event.preventDefault();
-      this.apply(view, 'ours');
-    });
+    const header = document.createElement('div');
+    header.className = 'cm-conflict-picker-header';
+    header.textContent = 'Merge conflict — pick a version to keep:';
+    wrap.append(header);
 
-    const theirs = document.createElement('button');
-    theirs.type = 'button';
-    theirs.textContent = 'keep theirs';
-    theirs.addEventListener('click', (event) => {
-      event.preventDefault();
-      this.apply(view, 'theirs');
-    });
+    wrap.append(
+      this.buildOption(view, 'Yours', 'Your version on this device', this.hunk.ours, 'ours'),
+      this.buildOption(
+        view,
+        'Other device',
+        'Version pulled from the synced repo',
+        this.hunk.theirs,
+        'theirs',
+      ),
+    );
 
-    wrap.append(ours, theirs);
     return wrap;
   }
 
@@ -71,6 +70,47 @@ class HunkActionsWidget extends WidgetType {
     // Default would be to consume click events; we want them so the buttons
     // can fire their handlers.
     return false;
+  }
+
+  private buildOption(
+    view: EditorView,
+    label: string,
+    sublabel: string,
+    content: string,
+    side: ConflictResolution,
+  ): HTMLElement {
+    const box = document.createElement('div');
+    box.className = `cm-conflict-option cm-conflict-option-${side}`;
+
+    const labelRow = document.createElement('div');
+    labelRow.className = 'cm-conflict-option-label';
+
+    const labelText = document.createElement('span');
+    labelText.className = 'cm-conflict-option-label-text';
+    labelText.textContent = label;
+
+    const sublabelText = document.createElement('span');
+    sublabelText.className = 'cm-conflict-option-sublabel';
+    sublabelText.textContent = sublabel;
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'cm-conflict-option-button';
+    button.textContent = 'Keep this version';
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      this.apply(view, side);
+    });
+
+    labelRow.append(labelText, sublabelText, button);
+
+    const contentElement = document.createElement('pre');
+    contentElement.className = 'cm-conflict-option-content';
+    contentElement.textContent =
+      content === '' ? '(empty — this version deletes the content)' : content;
+
+    box.append(labelRow, contentElement);
+    return box;
   }
 
   private apply(view: EditorView, side: ConflictResolution): void {
@@ -88,13 +128,14 @@ function buildDecorations(text: string, onResolve: ConflictResolveCallback): Dec
   const hunks = parseConflicts(text);
   const ranges: Range<Decoration>[] = [];
   for (const hunk of hunks) {
+    // Decoration.replace with a block widget swaps the entire hunk
+    // (markers + both bodies) for the picker UI. The user no longer sees
+    // raw <<<<<<< / ======= / >>>>>>> markers in the document.
     ranges.push(
-      Decoration.widget({
-        widget: new HunkActionsWidget(hunk, onResolve),
-        side: -1,
+      Decoration.replace({
+        widget: new HunkPickerWidget(hunk, onResolve),
         block: true,
-      }).range(hunk.from),
-      Decoration.mark({ class: 'cm-conflict-hunk' }).range(hunk.from, hunk.to),
+      }).range(hunk.from, hunk.to),
     );
   }
   return Decoration.set(ranges, true);
@@ -117,27 +158,67 @@ export function conflictOverlay(onResolve: ConflictResolveCallback): Extension {
   return [
     field,
     EditorView.theme({
-      '.cm-conflict-hunk': {
-        backgroundColor: 'rgba(255, 159, 64, 0.08)',
-        outline: '1px dashed var(--color-warn)',
-      },
-      '.cm-conflict-actions': {
+      '.cm-conflict-picker': {
         display: 'flex',
+        flexDirection: 'column',
         gap: '0.5rem',
-        padding: '0.25rem 0.5rem',
-        background: 'var(--color-bg)',
-        borderTop: '1px solid var(--color-warn)',
-        borderBottom: '1px solid var(--color-warn)',
-      },
-      '.cm-conflict-actions button': {
-        fontFamily: 'var(--font-mono)',
-        fontSize: '0.75rem',
-        background: 'transparent',
+        margin: '0.5rem 0',
+        padding: '0.75rem',
         border: '1px solid var(--color-warn)',
+        borderRadius: '4px',
+        background: 'rgba(255, 159, 64, 0.06)',
+      },
+      '.cm-conflict-picker-header': {
+        fontFamily: 'var(--font-mono)',
+        fontSize: '0.72rem',
+        fontWeight: '600',
         color: 'var(--color-warn)',
-        padding: '0.15rem 0.5rem',
+        letterSpacing: '0.02em',
+      },
+      '.cm-conflict-option': {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '0.4rem',
+        padding: '0.5rem 0.6rem',
+        border: '1px solid var(--color-border)',
+        borderRadius: '3px',
+        background: 'var(--color-bg)',
+      },
+      '.cm-conflict-option-label': {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.5rem',
+        fontFamily: 'var(--font-mono)',
+        fontSize: '0.72rem',
+      },
+      '.cm-conflict-option-label-text': {
+        fontWeight: '600',
+      },
+      '.cm-conflict-option-sublabel': {
+        flex: '1',
+        opacity: '0.6',
+      },
+      '.cm-conflict-option-button': {
+        fontFamily: 'var(--font-mono)',
+        fontSize: '0.7rem',
+        background: 'transparent',
+        border: '1px solid var(--color-accent)',
+        color: 'var(--color-accent)',
+        padding: '0.2rem 0.6rem',
         borderRadius: '3px',
         cursor: 'pointer',
+      },
+      '.cm-conflict-option-button:hover': {
+        opacity: '0.85',
+      },
+      '.cm-conflict-option-content': {
+        margin: '0',
+        fontFamily: 'inherit',
+        fontSize: 'inherit',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        borderLeft: '2px solid var(--color-border)',
+        paddingLeft: '0.5rem',
       },
     }),
   ];

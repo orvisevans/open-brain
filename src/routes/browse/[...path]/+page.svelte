@@ -227,8 +227,8 @@
   {#if conflictCount > 0}
     <div class="conflict-banner" role="status" aria-live="polite">
       <strong>{conflictCount} merge conflict{conflictCount === 1 ? '' : 's'}</strong>
-      in this note. Pick <em>keep ours</em> or <em>keep theirs</em> on each marked block below (or edit
-      the markers out manually).
+      in this note. Each block below shows your version and the version from another device — pick one
+      to keep.
     </div>
   {/if}
 
