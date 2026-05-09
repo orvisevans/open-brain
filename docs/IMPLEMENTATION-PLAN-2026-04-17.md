@@ -361,6 +361,181 @@ Spec deltas after Phase 3 review (see §10 2026-05-09 for the underlying experie
 
 ---
 
+## Phase 5.5 — Conversational note operations
+
+> Inserted 2026-05-09 after Phase 5 ship + research pass. Full rationale in [RESEARCH-2026-05-09-conversational-note-ops.md](./RESEARCH-2026-05-09-conversational-note-ops.md).
+
+### Direction
+
+Move chat from read-only RAG to a writing surface. Slash-command-fronted, preview-and-apply. No autonomous writes. No LLM tool calling. No LLM-based intent classifier. Mobile-first.
+
+### Vault conventions (`docs/` + `src/lib/vault/`)
+
+- [ ] Document the directory schema in the project README: `journal/YYYY-MM-DD.md`, `lists/<name>.md`, `notes/<slug>.md`. Frontmatter shape: `type:` (one of `note | journal | list | person | chat | idea`), `aliases: []`, `created_at:` ISO-8601.
+- [ ] Extend `src/lib/vault/frontmatter.ts` to round-trip the new fields if not already supported (`aliases`, `created_at`, `type`). Handwritten parser only — no `gray-matter` dep.
+- [ ] New `src/lib/vault/paths.ts` with pure functions: `dailyNotePath(date)`, `listPath(name)`, `notePath(slug)`, `slugify(title)`, `nextAvailableSlug(slug, exists)`. All tested.
+- [ ] `vault.listNotes()` consumers should accept the new directories without code changes — verify by adding a fixture vault with `journal/`, `lists/`, `notes/` and asserting `listNotes` returns all of them.
+
+### Slash command parser (`src/lib/chat/slash/parser.ts`)
+
+- [ ] `ParsedCommand` discriminated union covering `save`, `journal`, `note`, `append`, `list`, plus `unknown` for unrecognized slashes. Each variant carries its parsed args (`target?: NotePath`, `title?: string`, `body?: string`, modifiers like `--all`, `--bullet`, `--tag`).
+- [ ] `parseSlashCommand(input: string): ParsedCommand | null`. Returns `null` if input is not a slash command (caller falls back to chat). Handles: bare `/cmd`, `/cmd args`, `/cmd @path args`, quoted multi-word args (`"like this"`), trailing free text.
+- [ ] Parser is shared between **user input** and **LLM output** — the model emits the same syntax (see `llm-emit.ts` below). Single source of truth.
+- [ ] Unit tests covering: bare slashes, slash + free text, slash + `@` + body, quoted args, malformed input (returns `unknown`, never throws), empty body, leading whitespace.
+
+### Slash command dispatcher (`src/lib/chat/slash/dispatch.ts`)
+
+- [ ] `SlashHandler` interface: `(cmd: ParsedCommand, ctx: SlashContext) => Promise<Proposal>`. `SlashContext` carries vault, current chat session, and current selection / last assistant message.
+- [ ] `dispatch(cmd, ctx)` registry mapping command kind → handler. New handlers register at module load.
+- [ ] No handler writes directly. Every handler returns a `Proposal`; writes go through `applyProposal`.
+- [ ] Tests with a mock vault and a fake handler asserting routing correctness.
+
+### Proposal cards (`src/lib/chat/proposal/`)
+
+- [ ] `Proposal` type: `{ id, target: NotePath, op: 'create' | 'append' | 'replace', diff: ProposalDiff, summary, sourceTurnId }`. `ProposalDiff` is full content for `create` / unified-diff hunk for `append`/`replace`.
+- [ ] `ProposalCard.svelte` — header (e.g. `Append to lists/grocery.md`), body (rendered diff with adds highlighted, context dimmed), three buttons: **Apply**, **Edit then apply**, **Discard**.
+- [ ] `applyProposal(proposal, vault)` — writes through `vault.writeNote`. Idempotent: track applied IDs in the chat session so a second Apply on the same `id` is a no-op.
+- [ ] `editProposal(proposal)` — opens the diff in the chat input as editable text; on send, re-runs the dispatcher with the edited content and produces a new card.
+- [ ] Discarded proposals are recorded inline in the chat-session markdown as `<!-- discarded:proposal-id -->` so the LLM can avoid re-proposing the same thing.
+- [ ] Manual e2e: typing `/save` produces a card; **Apply** lands a file in `notes/`; the file shows up in the next sync push.
+
+### `/save` (`src/lib/chat/slash/handlers/save.ts`)
+
+- [ ] Captures the **last assistant message** by default. `--all` modifier captures the whole session.
+- [ ] Default destination: `notes/<slug-from-first-line>.md`. Override via `/save <title>` or `/save @notes/foo`.
+- [ ] Frontmatter: `type: note`, `created_at`, `source_chat:` link back to `.chats/<session-id>.md`.
+- [ ] Slug collision: append `-2`, `-3`, etc. via `nextAvailableSlug`.
+- [ ] Tests for slug generation (unicode, collisions, very long inputs).
+
+### `/journal` (`src/lib/chat/slash/handlers/journal.ts`)
+
+- [ ] Resolves today's daily note via `dailyNotePath(now)`. Creates the file with frontmatter (`type: journal`, `created_at`) + an `## Entries` heading if missing.
+- [ ] Appends the body under `## Entries` with a timestamped sub-heading (`### HH:MM`).
+- [ ] On voice input: full transcript is the body.
+- [ ] **No proposal card for the empty-file-creation case** — that's a deterministic write the user already asked for. Append to an existing daily note **does** show a card so the user sees the diff before it lands.
+
+### `/note <title>` (`src/lib/chat/slash/handlers/note.ts`)
+
+- [ ] Creates `notes/<slug-from-title>.md` with `type: note`, `created_at`, optional `tags:` from `--tag tagname` modifier (repeatable).
+- [ ] Body: empty by default. Separator form `/note <title> @ <body>` puts the rest in the body. When invoked from a chat asking the LLM to draft, body is the LLM's output.
+- [ ] Slug collision handling surfaces the chosen path in the proposal card so the user can edit before applying.
+
+### `/list <name>` (`src/lib/chat/slash/handlers/list.ts`)
+
+- [ ] Deterministic resolver `resolveList(name)`:
+    1. Exact filename match in `lists/`.
+    2. Case-insensitive filename match.
+    3. Frontmatter `aliases: [name, …]` match (any list whose aliases include `name`).
+    4. Not found → propose creating `lists/<slug>.md`.
+- [ ] Append item as a markdown bullet under `## Items` (creates the heading if missing).
+- [ ] **Embedding-based dedup before append**: embed the new item, cosine vs existing items in the list. If max > 0.9, skip silently and surface a toast (`"eggs" already on grocery list`). Reuses Phase 4 embedder.
+- [ ] Tests for the resolver including the alias path and the dedup path.
+
+### `/append @path` (`src/lib/chat/slash/handlers/append.ts`)
+
+- [ ] Generalizes `/list`. Requires explicit `@path`; refuses to guess.
+- [ ] Default appends as a new paragraph; `--bullet` modifier appends as a bullet under the last `##` heading.
+- [ ] If `@path` doesn't resolve, propose creating it (same proposal-card path as `/note`).
+
+### `@`-mention autocomplete (`src/lib/chat/mention/`)
+
+- [ ] `MentionIndex` in-memory store: `{ path, title, aliases[], lastModified, frecency }` per note. Built from `vault.listNotes()` + frontmatter; subscribes to vault change events to stay live.
+- [ ] `searchMentions(query): Match[]` — case-insensitive **infix** on path/title/aliases. Sort: per-note frecency, then `lastModified` desc, then path length asc. Hand-rolled scorer in <50 lines; no `fuse.js`.
+- [ ] `MentionPopover.svelte` — caret-anchored floating list. Arrow keys navigate, Enter/Tab inserts, Esc cancels. Insert produces an `@path` token in the chat input (parser maps it to the active slash command's `target`).
+- [ ] Trigger: bare `@` at word boundary. Closes when caret leaves the trigger context or user types whitespace without selecting.
+- [ ] Tests for the matcher (infix correctness, ranking ties, alias matches, unicode in titles).
+
+### Frecency-ordered chip bar (`src/lib/chat/command-bar/`)
+
+- [ ] `CommandStats` store at `.openbrain/command-stats.json`: `{ [cmd]: { count, lastUsedAt } }`. Read on chat mount; written on each chip use, debounced ~5s flush.
+- [ ] `frecencyScore(stat, now): number` = `count * exp(-ageDays / halflife)`, halflife = 14 days (document the choice; tunable via constant).
+- [ ] `CommandBar.svelte` — horizontal-scrolling, scroll-snapped chip list above the chat input. Top-N by frecency, then a stable tail of all commands. Tap inserts `/cmd ` and focuses the input.
+- [ ] **Mobile positioning**: subscribe to `window.visualViewport` resize/scroll; pin bar to `viewport.offsetTop + viewport.height - inputHeight - barHeight`. Graceful fallback (static placement) when `visualViewport` is unsupported.
+- [ ] **Desktop**: hover/focus-revealed (collapsed to a single `/` icon when idle) so it doesn't eat vertical space.
+- [ ] Sync: command-stats file rides the existing vault → SyncEngine pipeline. Stats-file conflict resolution: last-write-wins (no merge needed; stats are advisory).
+- [ ] Tests for the frecency scorer (ordering invariants, decay over time, tie-breaking).
+
+### Embedding-based intent suggester (`src/lib/chat/intent-suggester.ts`)
+
+- [ ] Per-command exemplar phrases (~5–10 each) in `src/lib/chat/intent-exemplars.ts`. Examples — `/journal`: "today I", "I felt", "this morning"; `/list`: "add X to my Y list", "put X on my list"; etc.
+- [ ] Pre-embed exemplars at app start. Cache in IndexedDB keyed by exemplar-set hash so the embed runs once per release. Reuses Phase 4 embedder.
+- [ ] `suggestCommand(input): { command, score } | null` — embed input, cosine vs each exemplar, return the top match if score crosses threshold (start at 0.55; tune from the manual eval set).
+- [ ] Debounce ~700ms after last keystroke; cancellable on send.
+- [ ] UI: when a suggestion fires, the matching chip is **promoted** to the leading position with a subtle highlight; an inline hint above the input reads `Looks like a journal entry — /journal?`. Tap chip or press Tab to accept.
+- [ ] **Never auto-routes.** Suggestion is only ever a UI hint.
+- [ ] Tests for the scorer + decision rule (with a fake embedder); manual eval against a fixture set of 30+ phrasings.
+
+### LLM slash-command output (`src/lib/chat/slash/llm-emit.ts`)
+
+- [ ] Few-shot prompt template teaching the model to emit slash syntax when the user is asking it to write/save/append. ~5 examples covering each command.
+- [ ] System prompt addition: "If the user wants to write/save/append, respond with a single slash-command line and nothing else; otherwise answer normally."
+- [ ] Parser is shared with user input (above) — no separate code path.
+- [ ] Default behind a `enableLlmEmit` setting. Flip on by default only after the JSON-vs-slash bench (see Spikes) confirms slash output is reliable enough on the shipped Gemma variant.
+- [ ] Tests covering parse-success on a fixture of 30+ recorded model outputs from manual sessions.
+
+### Suggestion sidecars (`src/lib/memory/suggestions.ts`)
+
+- [ ] `.suggestions.json` shape mirrors the embeddings sidecar: `{ schema_version, source, source_hash, generated_at, suggestions: [{ kind, target?, content, confidence }] }`.
+- [ ] New extraction-queue job kind `'organize'` running the LLM over a "messy" note (daily/inbox) and writing a suggestions sidecar. Lower priority than embedding jobs in the existing queue; respects `GpuLease`.
+- [ ] UI: when a note with a suggestions sidecar is opened in `/browse` or referenced in chat, render an "Organize" panel with each suggestion as an accept/reject chip. Accept produces a proposal card.
+- [ ] Cache by `source_hash`; invalidate on note edit. Sidecar conflicts auto-resolve via later `generated_at` (mirrors embeddings sidecar).
+- [ ] Tests for queue integration, cache hit/miss, and conflict resolution.
+
+### Daily review prompt (`src/lib/chat/daily-review.ts`)
+
+- [ ] On chat mount, read `.openbrain/last-review-at`. If > 24h ago **and** yesterday's daily note has unprocessed entries, surface a system message in chat: `You captured N items yesterday — want me to organize them?` with an inline action button.
+- [ ] Action runs a batched organize pass over yesterday's daily note → produces a single combined proposal card listing all suggested extractions / links / tags.
+- [ ] **Apply** commits the lot in one git commit with message `chore: review YYYY-MM-DD captures`.
+- [ ] Update `last-review-at` on Apply or explicit Skip.
+
+### Voice + slash UX
+
+- [ ] **Spike (1–2 hr)**: test whether Web Speech reliably transcribes `/journal`, `/save`, etc. on Chrome/Safari.
+- [ ] If reliable: no further work on slash transcription.
+- [ ] If unreliable (likely): pick one of —
+    1. **Hot-word rewrite** — transcript post-processor mapping "computer journal" → `/journal `, "computer save" → `/save `, etc.
+    2. **Mic-mode UI** — when mic active, chip bar chips are the active routing surface; tapping a chip before/during dictation sets the destination, transcript becomes the body.
+- [ ] Implement whichever the spike picks.
+- [ ] **TTS toggle for AI responses.** Add a "speak responses" toggle (settings + chat header). When on, the assistant's reply is spoken via `window.speechSynthesis` after streaming completes. Cancel any in-flight utterance when a new turn starts or the user navigates away. No continuous listening, no voice-activity detection, no interrupt handling — those are post-MVP (§13). Browser-native API; no new dep, no model load. Voice and rate fall back to defaults; per-voice selection deferred.
+
+### Spikes (saved for dedicated sessions)
+
+- [ ] **JSON-vs-slash output reliability bench** on Gemma — design + decision rule already in research §6. ~1 day. Run before flipping `enableLlmEmit` on by default.
+- [ ] **Voice + slash UX spike** (above).
+
+### Testing
+
+- [ ] Vitest coverage: slash parser, list resolver, frecency scorer, mention infix matcher, intent suggester scorer, slugifier, `nextAvailableSlug`, suggestion sidecar reader/writer, dedup-by-embedding helper.
+- [ ] Manual e2e following the exit criteria below.
+
+### Suggested ship order
+
+1. Vault conventions + path utilities + `/save` + proposal cards. Validates the proposal-card UX with zero routing risk.
+2. `/journal` (single deterministic destination).
+3. `/note <title>` (single new-file write).
+4. `/list <name>` with deterministic resolver + dedup.
+5. `/append @path` (generalizes `/list`).
+6. Chip bar + `@`-autocomplete — interleaved with #1–#5; surface as soon as `/save` lands.
+7. Embedding-based suggester — once #1–#5 are stable.
+8. LLM slash-command output (gated on the JSON-vs-slash bench).
+9. Suggestion sidecars + daily review — last; depends on the rest being usable.
+
+Edits, renames, and deletes are explicitly **out of Phase 5.5**; deferred to a later phase once write telemetry exists.
+
+### Exit criteria
+
+- [ ] All five slash commands ship with proposal cards: `/save`, `/journal`, `/note`, `/append`, `/list`.
+- [ ] Chip bar works on mobile (above the keyboard via `visualViewport`) and desktop (hover/focus-revealed). Stats persist and sync.
+- [ ] `@`-mention autocomplete with infix matching ships and inserts targets correctly into all five commands.
+- [ ] Embedding-based suggester promotes the correct chip on a curated set of ~30 representative phrasings (accuracy floor ≥ 70%, defined and measured).
+- [ ] List dedup by embedding silently skips identical re-adds.
+- [ ] Suggestion sidecars + daily review surface organize proposals for accumulated daily-note captures; one Apply commits the batch.
+- [ ] One end-to-end demo: voice → captured to today's journal → daily review surfaces an organize proposal → user accepts → notes land in `notes/` with backlinks to source.
+- [ ] `npm run check` green.
+- [ ] Review Phase 6's tasks; attachments may now need to coexist with the proposal-card UX (e.g. drag-drop image triggers a card rather than direct write).
+
+---
+
 ## Phase 6 — Attachments
 
 - [ ] `AttachmentStore` interface per architecture §6
@@ -472,6 +647,85 @@ Run against [DESIGN](./DESIGN-2026-04-17.md). This is a pass, not a rebuild.
 
 ---
 
+## Phase 10.5 — Deterministic e2e test suite
+
+> Placeholder. Detailed task list to be drafted when phase opens. Goal: capture user-visible behavior in tests that survive refactors, so the architectural review (Phase 10.7) can act on findings without regressing shipped behavior.
+
+### Direction
+
+Up to now, Vitest covers pure/functional modules and UI is verified manually (Phase 0 convention). That is fine while we're building forward, but it makes refactoring risky. Before the architectural review, lock in the user-visible behavior of every shipped phase with deterministic, browser-driven tests that run in CI.
+
+### Scope (placeholder — refine when opening)
+
+- [ ] **Framework selection.** Decide between Playwright (full browser, real WebGPU optional) and Vitest browser-mode (lighter, but harder to drive WebGPU). Frame the decision around determinism and CI cost.
+- [ ] **Determinism strategy for the LLM.** Replace WebLLM with a fake engine that streams pre-recorded responses keyed by `(messages, response_format)` hash. Records live in `tests/fixtures/llm/`. New responses recorded via a "record mode" run.
+- [ ] **Determinism strategy for embeddings.** Replace Transformers.js embedder with a deterministic fake (e.g. a hash-based pseudo-embedding) for tests that don't need real semantic behavior; for tests that do, record real embeddings to fixtures keyed by input hash.
+- [ ] **Vault fixtures.** Deterministic git history per scenario (committed test repos under `tests/fixtures/vault/`). Cover: empty vault, vault with notes only, vault mid-sync, vault with conflicts, vault with sidecars.
+- [ ] **GitHub mock.** Fake the same-origin proxy endpoints (`/__gh*`) with a local HTTP server in tests so device flow, installations, clone, push, pull, and conflict scenarios are reproducible without hitting GitHub.
+- [ ] **Web Speech mock.** Inject a fake `recognitionFactory` (the DI seam already exists from Phase 5) that emits scripted transcript events.
+- [ ] **WebGPU/GPU lease.** Decide whether to mock or to require WebGPU-capable CI runners. Probably mock — the lease semantics are what matter, not real GPU work.
+- [ ] **Coverage targets per phase.** At least one happy-path scenario per shipped phase:
+    - Phase 1 walking skeleton: app boots, model loads (faked), one chat turn renders.
+    - Phase 2: Browse tab lists notes; opening a note shows content.
+    - Phase 3: edit → debounce → commit → push → remote edit → pull → conflict → resolve via picker → re-push.
+    - Phase 4: write a note → embedding queued → sidecar appears → retrieval finds the chunk.
+    - Phase 5: chat with retrieval cites the right note; voice input appears as a turn.
+    - Phase 5.5: each slash command produces a card; Apply lands the file; chip bar reorders by frecency; `@`-mention autocomplete inserts a target; suggester promotes the right chip.
+- [ ] **CI integration.** Add `check:e2e` to the `npm run check` pipeline (or as a separate job if too slow). Tier into smoke (every PR) vs. full (nightly + pre-release) if needed.
+- [ ] **Test data hygiene.** Fixtures under `tests/fixtures/`; record-mode outputs gitignored unless explicitly committed; one canonical script for re-recording.
+
+### Open questions
+
+- [ ] Single suite or tiered (smoke / full)? Inform with measured CI cost.
+- [ ] Do we use real isomorphic-git in tests against a local bare-repo fake, or mock the git layer entirely? Real-git-against-fake-server is more faithful and the existing `git.ts` wrapper is already the seam.
+- [ ] How do we test the JSON-vs-slash bench artifacts long-term — fold into the suite or keep as a separate one-shot harness?
+
+### Exit criteria
+
+- [ ] At least one happy-path e2e per shipped phase, all green.
+- [ ] LLM and embedding fakes are deterministic; tests are stable across runs and machines.
+- [ ] CI runs the suite on every PR; failures block merge.
+- [ ] `npm run check` green (including the new e2e tier or with a documented carve-out).
+- [ ] Document the record-mode workflow in `docs/` so future phases can extend the fixtures without spelunking.
+
+---
+
+## Phase 10.7 — Architectural review
+
+> Placeholder. Detailed task list to be drafted when phase opens. Depends on Phase 10.5 — the e2e suite is the regression safety net that lets us act on review findings.
+
+### Direction
+
+Take stock of the architecture before launch. Identify accumulated tech debt, cross-cutting issues, and areas where MVP shortcuts need hardening. Output is a punch list of changes to apply, each backed by the e2e suite from Phase 10.5.
+
+### Scope (placeholder — refine when opening)
+
+- [ ] **Decision Log read-through.** Re-read every entry in §10. Tag each as: `still-correct`, `needs-amendment`, or `superseded`. Update entries that are out of date.
+- [ ] **Doc reconciliation.** Re-read [CONSTRAINTS](./CONSTRAINTS-2026-04-17.md), [TECH-STACK](./TECH-STACK-2026-04-17.md), [ARCHITECTURE](./ARCHITECTURE-2026-04-17.md), [DESIGN](./DESIGN-2026-04-17.md). Identify drift between docs and shipped code; amend whichever is correct.
+- [ ] **Module-by-module health review.** For each `src/lib/*` module: are the seams correct? Is the public API tight? Are there unused exports? Any cycles?
+- [ ] **Performance baseline.** Measure boot time, TTFT, retrieval latency, embedding throughput, sync round-trip, full vault scan time. Capture against a fixed reference vault. Flag any regressions vs. earlier benchmarks (where they exist).
+- [ ] **Bundle size audit.** Per-route chunk sizes; identify any unexpected dep growth; flag candidates for lazy-loading.
+- [ ] **Security review.** Auth token storage, refresh flow, CORS proxy surface, third-party deps (audit + dedupe), CSP readiness, secret-handling hygiene in `.chats/` and sidecars.
+- [ ] **Cross-cutting concerns.** Error handling consistency, logging discipline (only `console.error`/`console.warn` via `logError`), accessibility coverage, i18n posture (even if not shipped yet), test coverage per module.
+- [ ] **Punch list.** Output a numbered list of changes, each tagged `must-fix-before-launch` / `should-fix-before-launch` / `post-MVP`. Each fix must reference (or create) an e2e test that asserts the behavior being preserved.
+- [ ] **Apply the must-fix list.** Each refactor lands as its own commit, with the e2e suite green before and after, and a Decision Log entry explaining the change.
+
+### Open questions
+
+- [ ] Internal review only, or solicit one external pair of eyes on architecture/security?
+- [ ] Threshold for `must-fix-before-launch` vs. `post-MVP` — define before the review starts so it doesn't drift.
+- [ ] Do we treat this as one bounded review or as the start of an ongoing cadence (e.g. quarterly)?
+
+### Exit criteria
+
+- [ ] Decision Log, CONSTRAINTS, TECH-STACK, ARCHITECTURE, DESIGN all reconciled with shipped code.
+- [ ] Performance baselines captured and committed.
+- [ ] Punch list complete; every `must-fix-before-launch` item landed.
+- [ ] e2e suite still green after all applied changes.
+- [ ] `npm run check` green.
+
+---
+
 ## Phase 11 — Launch prep
 
 - [ ] Manual smoke test on each supported browser per `compat` matrix — capture which features work where
@@ -564,6 +818,18 @@ Record non-obvious decisions made during implementation that future sessions sho
   7. **Status-bar conflict link.** `! conflict (1)` was a static span with no path to action. Now an underlined link to the first conflicted note; clicking jumps straight to the editor for that file.
   8. **Pre-authenticate git smart-HTTP.** Cosmetic console noise: every periodic pull produced a 401 on `/info/refs` because git's smart-HTTP protocol probes unauth first by design. We now pre-set `Authorization: Basic ...` in the request `headers` so the first request is already authenticated and the protocol skips the dance. `onAuth` stays as a fallback.
   9. **Conflict resolution producing a non-merge commit.** Filed limitation: when the user resolves and the engine commits, isomorphic-git creates a regular commit (single parent: HEAD) rather than a merge commit (parents: HEAD + MERGE_HEAD). Push of this commit may be non-fast-forward and trigger another auto-recovery cycle. In practice the recovery converges (each iteration brings the trees closer); the proper fix is to detect `MERGE_HEAD` post-resolution and pass `parent: [...]` to `commit()`. Filed in §13 backlog under "Tier 2 should produce true merge commits".
+- `2026-05-09` — **Phase 5.5 inserted before Phase 6: conversational note operations.** Chat moves from read-only RAG to a writing surface. Direction settled in [RESEARCH-2026-05-09-conversational-note-ops.md](./RESEARCH-2026-05-09-conversational-note-ops.md):
+  1. **Slash-command-fronted, preview-and-apply.** Five commands (`/save`, `/journal`, `/note`, `/append`, `/list`); every write flows through a proposal card. No autonomous writes, no LLM tool calling, no LLM-based intent classifier.
+  2. **Mobile-first chip bar** above the input (above keyboard via `visualViewport` on mobile, hover/focus-revealed on desktop). Frecency-ordered (`count × exp(-age_days / halflife)`); stats persist in `.openbrain/command-stats.json` so order syncs across devices.
+  3. **`@`-mention autocomplete** with case-insensitive infix matching on path / `title` / `aliases[]`. In-memory index, rebuilt on vault change events. No new dep — hand-rolled scorer for low-thousands of notes is faster than `fuse.js`.
+  4. **Embedding-based intent suggester** (not LLM-based) runs on a ~600–800 ms typing-pause debounce; cosine-scores against pre-embedded exemplar phrases per command and *promotes* the matching chip. Never auto-routes. If accuracy is insufficient in practice, layer in an LLM second-pass — but only as a suggester, never as a router.
+  5. **LLM output format = slash-command syntax**, not JSON. Cheapest tokens, same parser as user input, self-documenting few-shots. YAML for the rare nested payload. JSON-mode reserved pending a Gemma 1B/4B reliability bench.
+  6. **Capture-first, organize-later.** Captures land in their target deterministically with no LLM call. Organization is deferred via suggestion sidecars (mirror Phase 4 embedding sidecars) + a once-a-day review prompt. Reuses the extraction queue and `GpuLease` — no new infra.
+  7. **Edits/renames/deletes are out of Phase 5.5.** Deferred to a later phase once we have telemetry on proposal accuracy.
+
+  KV-cache spike (~5 min, web-llm source + multi-round-chat example): WebLLM auto-reuses KV cache when `messages` is a strict prefix-extension of the previous call within the same engine session. The cache is single-track per engine — a different-system-prompt classifier interleaved between chat turns would bust the cache for both. This is the strongest reason the intent classifier stays embedding-based (no LLM call). No further KV-cache spike planned.
+
+  JSON-vs-slash precheck (~15 min, web-llm repo + docs): WebLLM exposes `response_format: { type: 'json_object' }` with grammar constraints, and ships dedicated `examples/json-mode` + `examples/json-schema`. Official example uses Llama-3.2-3B, not Gemma; "most models support grammar" is not "all". No open WebLLM issues against Gemma + JSON (neutral signal). Bench is **valid and worth running** — saved for a dedicated session, full design in research §6.
 
 ---
 
@@ -599,7 +865,7 @@ Filed here so ideas that surface during MVP work don't get lost.
 - [ ] Tier 3 conflict auto-recovery (write `<path>.conflict-<ISO>.md` backup, reset workdir to remote, replay). Deferred from Phase 3 because the destructive reset/replay needs browser-level testing on a real `MergeNotSupportedError`. See §10 2026-05-05 Phase 3 entry.
 - [ ] Tier 2 resolution should produce a true merge commit (parents: HEAD + MERGE_HEAD) instead of a single-parent commit. Currently relies on the push-rejection auto-recovery loop to converge — works but inefficient and may produce more conflict iterations than necessary. See §10 2026-05-09 #9.
 - [ ] Whisper transcription as a privacy/accuracy mode
-- [ ] Voice output for conversational chat
+- [ ] **Full conversational voice mode.** Continuous listening (re-arm mic after each AI turn), voice-activity detection / end-of-turn detection, interrupt handling (abort TTS + LLM stream when user speaks over the AI), and prompt tuning so responses are short enough for voice. Phase 5.5 ships the basic TTS toggle for one-shot speak-the-reply; this is the deeper "talk to it like a person" mode. Estimate: 2–3 days minimum, plus ongoing tuning since users will benchmark against ChatGPT Voice / Siri.
 - [ ] Rich markdown preview
 - [ ] External attachment storage via `AttachmentStore` abstraction
 - [ ] AAAK render-at-retrieval experiment (only if vault size demands)
