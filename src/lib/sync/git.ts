@@ -12,11 +12,13 @@ import LightningFS from '@isomorphic-git/lightning-fs';
 import {
   Errors,
   add as gitAdd,
+  checkout as gitCheckout,
   clone,
   commit as gitCommit,
   currentBranch,
+  fetch as gitFetch,
   listFiles as gitListFiles,
-  pull as gitPull,
+  merge as gitMerge,
   push as gitPush,
   remove as gitRemove,
   resolveRef,
@@ -191,33 +193,54 @@ async function pull(token: string, author: GitAuthor): Promise<PullResult> {
     }
 
     const branch = await getCurrentBranch();
-    // isomorphic-git's `pull` does fetch + merge in one shot. We use
-    // `abortOnConflict: false` so conflict markers are written into the
-    // working files — that's what tier 2's resolver UI inspects.
-    //
-    // The default mergeDriver in 1.37 throws MergeConflictError WITHOUT
-    // writing markers to the workdir, so we provide our own driver that
-    // emits diff3-style markers (see merge-driver.ts). Without this the
-    // editor would have nothing to decorate and the user no way to resolve.
-    // pull() forwards both `abortOnConflict` and `mergeDriver` to its
-    // internal merge() call, but isomorphic-git's `.d.ts` declares them
-    // only on merge() — not pull. The runtime accepts both fine.
-    const pullArguments = {
+
+    // We deliberately compose fetch + merge + checkout instead of calling
+    // isomorphic-git's `pull`. The pull() wrapper does NOT accept
+    // `mergeDriver` or `abortOnConflict` (they're not in its destructured
+    // args), so passing them is a silent no-op — merge runs with defaults
+    // (mergeFile driver, abortOnConflict: true), which throws on overlap
+    // WITHOUT writing markers to the workdir. The editor then has nothing
+    // to decorate and the user has no way to resolve. By calling merge()
+    // ourselves we can pass our diff3-based driver that emits proper
+    // <<<<<<< / ======= / >>>>>>> markers for the overlay to find.
+    const fetchResult = await gitFetch({
       ...gitDefaults(token),
       ref: branch,
       singleBranch: true,
+    });
+    if (fetchResult.fetchHead === null) {
+      // Nothing fetched. Either remote is empty or already up-to-date.
+      return { kind: 'up-to-date' };
+    }
+
+    await gitMerge({
+      fs,
+      dir: REPO_DIR,
+      ours: branch,
+      theirs: fetchResult.fetchHead,
       author: { name: author.name, email: author.email },
+      message: `Merge ${fetchResult.fetchHeadDescription ?? 'remote'}`,
       mergeDriver: diff3MergeDriver,
       abortOnConflict: false,
-    } as Parameters<typeof gitPull>[0];
-    await gitPull(pullArguments);
+    });
+
+    // Reflect any HEAD advance in the working tree. merge() updates the
+    // index but the `pull` flow follows up with checkout to materialise
+    // the new tree onto disk.
+    await gitCheckout({
+      fs,
+      dir: REPO_DIR,
+      ref: branch,
+      noCheckout: false,
+    });
+
     return { kind: 'merged' };
   } catch (error: unknown) {
     if (error instanceof Errors.MergeConflictError) {
       const conflictPaths = error.data.filepaths;
-      // After a non-aborting merge with conflicts, the working files contain
-      // diff3 markers; we just surface the affected paths. Tier 2 UI handles
-      // the rest.
+      // With our diff3 mergeDriver + abortOnConflict: false, the working
+      // files now contain diff3 markers; the conflict-overlay extension
+      // decorates them with keep-ours / keep-theirs buttons.
       return { kind: 'conflict', conflictPaths };
     }
     if (error instanceof Errors.MergeNotSupportedError) {
