@@ -5,6 +5,9 @@
 // + `dispatch` per turn.
 
 import { registerHandler, type SlashHandler } from './dispatch';
+import { appendHandler } from './handlers/append';
+import { journalHandler } from './handlers/journal';
+import { listHandler } from './handlers/list';
 import { noteHandler } from './handlers/note';
 import { saveHandler } from './handlers/save';
 import type { ParsedCommand } from './parser';
@@ -17,6 +20,9 @@ export { dispatch, registerHandler, resetHandlers } from './dispatch';
 const CORE_HANDLERS: { kind: ParsedCommand['kind']; handler: SlashHandler }[] = [
   { kind: 'save', handler: saveHandler },
   { kind: 'note', handler: noteHandler },
+  { kind: 'journal', handler: journalHandler },
+  { kind: 'list', handler: listHandler },
+  { kind: 'append', handler: appendHandler },
 ];
 
 let coreRegistered = false;
