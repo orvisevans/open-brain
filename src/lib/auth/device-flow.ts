@@ -26,8 +26,23 @@ interface DeviceCodeResponse {
 
 interface PollResponse {
   access_token?: string;
+  // GitHub Apps with user-access expiration enabled return both of these
+  // alongside `access_token`. They're absent for legacy/non-expiring tokens.
+  refresh_token?: string;
+  expires_in?: number;
+  refresh_token_expires_in?: number;
   error?: string;
   interval?: number;
+}
+
+// Result of a successful device flow / refresh exchange. expiresAt /
+// refreshExpiresAt are absolute ms epochs so callers don't have to remember
+// when they minted the token.
+export interface AccessTokenResult {
+  accessToken: string;
+  refreshToken: string;
+  accessExpiresAt: number;
+  refreshExpiresAt: number;
 }
 
 async function requestDeviceCode(clientId: string): Promise<DeviceCodeResponse> {
@@ -68,18 +83,36 @@ function delay(seconds: number): Promise<void> {
   });
 }
 
+function pollResponseToTokenResult(poll: PollResponse): AccessTokenResult | undefined {
+  if (typeof poll.access_token !== 'string') return undefined;
+  // GitHub Apps with token expiration disabled would omit refresh_token /
+  // expires_in. We don't expect that configuration but guard anyway: fall
+  // back to "lifetime" sentinels so callers can store something coherent.
+  // Subtract a 60s safety buffer so we treat the token as expiring slightly
+  // before GitHub does, avoiding races on 401-near-boundary.
+  const SAFETY_BUFFER_MS = 60_000;
+  const accessExpiresIn = poll.expires_in ?? 8 * 60 * 60;
+  const refreshExpiresIn = poll.refresh_token_expires_in ?? 6 * 30 * 24 * 60 * 60;
+  return {
+    accessToken: poll.access_token,
+    refreshToken: poll.refresh_token ?? '',
+    accessExpiresAt: Date.now() + accessExpiresIn * 1000 - SAFETY_BUFFER_MS,
+    refreshExpiresAt: Date.now() + refreshExpiresIn * 1000,
+  };
+}
+
 /**
  * Runs the full GitHub App Device Flow.
  *
  * @param clientId     GitHub App client_id (public, safe to bundle; `Iv23li…` prefix).
  * @param onCode       Called once the device code is ready; show userCode to the user
  *                     and open verificationUri in a new tab.
- * @returns            The user access token once the user has authorised the app.
+ * @returns            The full token bundle (access + refresh + expiries).
  */
 export async function runDeviceFlow(
   clientId: string,
   onCode: (userCode: string, verificationUri: string) => void,
-): Promise<string> {
+): Promise<AccessTokenResult> {
   const codeResponse = await requestDeviceCode(clientId);
   onCode(codeResponse.user_code, codeResponse.verification_uri);
 
@@ -91,9 +124,8 @@ export async function runDeviceFlow(
 
     const poll = await pollOnce(clientId, codeResponse.device_code);
 
-    if (typeof poll.access_token === 'string') {
-      return poll.access_token;
-    }
+    const result = pollResponseToTokenResult(poll);
+    if (result !== undefined) return result;
 
     if (poll.error === 'slow_down') {
       // GitHub asks us to back off; increase the interval for subsequent polls.
@@ -104,4 +136,41 @@ export async function runDeviceFlow(
   }
 
   throw new Error('Device flow timed out — the user did not authorise in time');
+}
+
+/**
+ * Exchanges a refresh token for a fresh access token + refresh token pair.
+ * GitHub rotates the refresh token on every refresh, so callers must
+ * persist the new bundle.
+ *
+ * Throws if the refresh token has expired or been revoked — caller should
+ * clear local auth state and prompt the user to re-run the device flow.
+ */
+export async function refreshAccessToken(
+  clientId: string,
+  refreshToken: string,
+): Promise<AccessTokenResult> {
+  const response = await fetch(TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: clientId,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token',
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Token refresh failed: ${String(response.status)}`);
+  }
+
+  const poll = (await response.json()) as PollResponse;
+  if (poll.error !== undefined) {
+    throw new Error(`Token refresh error: ${poll.error}`);
+  }
+  const result = pollResponseToTokenResult(poll);
+  if (result === undefined) {
+    throw new Error('Token refresh returned no access_token');
+  }
+  return result;
 }

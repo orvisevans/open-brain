@@ -2,11 +2,22 @@
   import type { Snippet } from 'svelte';
   import { page } from '$app/state';
 
+  import { initSession, getValidAccessToken } from '$lib/auth/session';
   import { logError } from '$lib/log';
   import { auth, model, network, repo } from '$lib/state.svelte';
   import { syncEngine, type SyncStatus } from '$lib/sync';
   import { getStoredRepo } from '$lib/sync/repo-storage';
   import '../app.css';
+
+  const rawClientId: unknown = import.meta.env['VITE_GITHUB_CLIENT_ID'];
+  const clientId = typeof rawClientId === 'string' ? rawClientId : '';
+
+  // Token-refresh poll. Once a minute we ask the session manager for a
+  // valid token; if the stored one is within 5 minutes of expiry it'll
+  // exchange the refresh token for a new pair behind the scenes. Frequency
+  // is conservative so a tab waking from sleep at the worst moment still
+  // has a few minutes to refresh before any API call goes out.
+  const REFRESH_CHECK_INTERVAL_MS = 60_000;
 
   interface Properties {
     children?: Snippet;
@@ -27,6 +38,35 @@
         logError('layout/restore-repo', { error });
       }
     })();
+  });
+
+  // Hydrate the auth session (access + refresh + expiry) from IndexedDB on
+  // mount, refreshing if needed. Without this the access token from a
+  // prior tab/session expires after 8h and every API call 401s.
+  $effect(() => {
+    if (clientId === '') return;
+    void (async () => {
+      try {
+        await initSession({ clientId });
+      } catch (error: unknown) {
+        logError('layout/init-session', { error });
+      }
+    })();
+  });
+
+  // Periodic token freshness check. getValidAccessToken refreshes
+  // proactively when expiry is near; we don't care about the return
+  // value, we just want the side-effect.
+  $effect(() => {
+    if (clientId === '') return;
+    const id = globalThis.setInterval(() => {
+      void getValidAccessToken().catch((error: unknown) => {
+        logError('layout/refresh-tick', { error });
+      });
+    }, REFRESH_CHECK_INTERVAL_MS);
+    return () => {
+      globalThis.clearInterval(id);
+    };
   });
 
   // Wire up online/offline detection.

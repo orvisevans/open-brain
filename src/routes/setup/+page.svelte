@@ -6,7 +6,7 @@
     listInstallations,
     type GitHubRepo,
   } from '$lib/auth/installations';
-  import { getAccessToken, setAccessToken } from '$lib/auth/storage';
+  import { adoptBundle, getValidAccessToken, initSession } from '$lib/auth/session';
   import { wipeLocalData } from '$lib/auth/wipe';
   import { GEMMA_MODEL_ID, loadModel } from '$lib/llm/runtime';
   import { logError } from '$lib/log';
@@ -48,18 +48,20 @@
   let cloneStep = $state<CloneStep>('idle');
   let cloneError = $state<string | undefined>(undefined);
 
-  // On mount, restore any persisted token and re-resolve repos.
+  // On mount, restore any persisted session and re-resolve repos. Session
+  // init proactively refreshes the access token if it's near expiry, so
+  // the resolveRepos call below always runs against a fresh token.
   $effect(() => {
+    if (clientId === '') return;
     void (async () => {
       try {
-        const token = await getAccessToken();
-        if (token !== undefined) {
-          auth.token = token;
+        const bundle = await initSession({ clientId });
+        if (bundle !== undefined) {
           authStep = 'done';
-          resolveRepos(token);
+          resolveRepos(bundle.accessToken);
         }
       } catch (error: unknown) {
-        logError('setup/restore-token', { error });
+        logError('setup/restore-session', { error });
       }
     })();
   });
@@ -74,16 +76,15 @@
 
     void (async () => {
       try {
-        const token = await runDeviceFlow(clientId, (code, uri) => {
+        const bundle = await runDeviceFlow(clientId, (code, uri) => {
           userCode = code;
           verificationUri = uri;
           authStep = 'polling';
           globalThis.open(uri, '_blank', 'noopener,noreferrer');
         });
-        await setAccessToken(token);
-        auth.token = token;
+        await adoptBundle(bundle);
         authStep = 'done';
-        resolveRepos(token);
+        resolveRepos(bundle.accessToken);
       } catch (error: unknown) {
         logError('setup/device-flow', { error });
         authStep = 'error';
@@ -146,11 +147,8 @@
   }
 
   function startClone() {
-    if (auth.token === undefined || selectedRepo === undefined) {
-      return;
-    }
+    if (selectedRepo === undefined) return;
 
-    const token = auth.token;
     const { name } = selectedRepo;
     const owner = selectedRepo.owner.login;
 
@@ -159,6 +157,13 @@
 
     void (async () => {
       try {
+        // Use getValidAccessToken so we hit refresh-on-near-expiry before
+        // committing to a clone (which can take a while and can't easily
+        // be retried mid-stream).
+        const token = await getValidAccessToken();
+        if (token === undefined) {
+          throw new Error('No active session — sign in first.');
+        }
         await cloneRepository(owner, name, token);
         await setStoredRepo({ owner, name });
         repo.owner = owner;
@@ -177,9 +182,12 @@
   }
 
   function retryResolve() {
-    if (auth.token !== undefined) {
-      resolveRepos(auth.token);
-    }
+    void (async () => {
+      const token = await getValidAccessToken();
+      if (token !== undefined) {
+        resolveRepos(token);
+      }
+    })();
   }
 
   // ── Model load state ──────────────────────────────────────────────────────
