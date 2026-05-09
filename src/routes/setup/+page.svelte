@@ -8,7 +8,13 @@
   } from '$lib/auth/installations';
   import { adoptBundle, getValidAccessToken, initSession } from '$lib/auth/session';
   import { wipeLocalData } from '$lib/auth/wipe';
-  import { GEMMA_MODEL_ID, loadModel } from '$lib/llm/runtime';
+  import {
+    DEFAULT_VARIANT_ID,
+    getVariant,
+    loadModel,
+    MODEL_VARIANTS,
+    type ModelVariant,
+  } from '$lib/llm/runtime';
   import { logError } from '$lib/log';
   import { auth, model, repo } from '$lib/state.svelte';
   import { cloneRepository } from '$lib/sync/git';
@@ -192,24 +198,44 @@
 
   // ── Model load state ──────────────────────────────────────────────────────
 
+  let selectedVariantId = $state<string>(model.id ?? DEFAULT_VARIANT_ID);
+  const selectedVariant = $derived<ModelVariant | undefined>(getVariant(selectedVariantId));
+
+  function pickVariant(id: string) {
+    selectedVariantId = id;
+  }
+
   function startLoadModel() {
     model.loading = true;
     model.loaded = false;
     model.progress = 0;
 
+    const variantId = selectedVariantId;
     void (async () => {
       try {
-        await loadModel(GEMMA_MODEL_ID, (progress) => {
+        await loadModel(variantId, (progress) => {
           model.progress = progress;
         });
         model.loaded = true;
         model.loading = false;
-        model.id = GEMMA_MODEL_ID;
+        model.id = variantId;
       } catch (error: unknown) {
         logError('setup/load-model', { error });
         model.loading = false;
       }
     })();
+  }
+
+  function formatMb(mb: number): string {
+    if (mb < 1024) return `${String(mb)} MB`;
+    return `${(mb / 1024).toFixed(1)} GB`;
+  }
+
+  function loadButtonLabel(): string {
+    const label = selectedVariant?.label ?? 'selected variant';
+    if (!model.loaded) return `Load ${label}`;
+    if (selectedVariant?.id === model.id) return `Reload ${label}`;
+    return `Switch to ${label}`;
   }
 </script>
 
@@ -315,15 +341,44 @@
     <h2>3. Load local AI model</h2>
     {#if model.loaded}
       <p class="ok">✓ {model.id ?? 'Model'} loaded.</p>
+      <p class="hint">Switch variant by selecting another option below and reloading.</p>
     {:else if model.loading}
-      <p>Loading {GEMMA_MODEL_ID}… {String(Math.round(model.progress * 100))}%</p>
+      <p>Loading {model.id ?? selectedVariantId}… {String(Math.round(model.progress * 100))}%</p>
       <progress value={model.progress}></progress>
-    {:else}
-      <p>
-        Downloads ~1.5 GB on first use; cached in your browser for subsequent loads. Requires a
-        WebGPU-capable browser.
+    {/if}
+
+    <fieldset class="variants" disabled={model.loading}>
+      <legend class="hint">Model variant</legend>
+      {#each MODEL_VARIANTS as variant (variant.id)}
+        <label class="variant" class:active={selectedVariantId === variant.id}>
+          <input
+            type="radio"
+            name="variant"
+            value={variant.id}
+            checked={selectedVariantId === variant.id}
+            onchange={() => {
+              pickVariant(variant.id);
+            }}
+          />
+          <span class="variant-head">
+            <span class="variant-label">{variant.label}</span>
+            <span class="variant-size">
+              {formatMb(variant.downloadMb)} download · ~{formatMb(variant.vramMb)} VRAM
+            </span>
+          </span>
+          <span class="variant-desc">{variant.description}</span>
+        </label>
+      {/each}
+    </fieldset>
+
+    {#if !model.loading}
+      <button onclick={startLoadModel} disabled={selectedVariant === undefined}>
+        {loadButtonLabel()}
+      </button>
+      <p class="hint">
+        Models cache in your browser; switching reloads weights but doesn't re-download cached ones.
+        Requires a WebGPU-capable browser.
       </p>
-      <button onclick={startLoadModel}>Load {GEMMA_MODEL_ID}</button>
     {/if}
   </section>
 </div>
@@ -405,6 +460,66 @@
     border: 1px solid var(--color-border);
     display: inline-block;
     margin: 0.5rem 0;
+  }
+
+  .variants {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    border: none;
+    padding: 0;
+    margin: 0.5rem 0 0.75rem;
+  }
+
+  .variants legend {
+    margin-bottom: 0.25rem;
+  }
+
+  .variant {
+    display: grid;
+    grid-template-columns: 1.25rem 1fr;
+    grid-template-areas: 'radio head' 'radio desc';
+    gap: 0.1rem 0.5rem;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid var(--color-border);
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 0.8rem;
+  }
+
+  .variant input {
+    grid-area: radio;
+    margin-top: 0.25rem;
+    accent-color: var(--color-accent);
+  }
+
+  .variant.active {
+    border-color: var(--color-accent);
+  }
+
+  .variant-head {
+    grid-area: head;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+    font-family: var(--font-mono);
+  }
+
+  .variant-label {
+    color: var(--color-fg);
+    font-weight: 600;
+  }
+
+  .variant-size {
+    opacity: 0.6;
+    font-size: 0.7rem;
+  }
+
+  .variant-desc {
+    grid-area: desc;
+    opacity: 0.75;
+    font-size: 0.75rem;
   }
 
   progress {

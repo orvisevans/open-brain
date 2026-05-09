@@ -1,0 +1,253 @@
+import { describe, expect, it } from 'vitest';
+
+import { assembleContext, cosine, retrieve, SYSTEM_PROMPT } from '../retrieve';
+import { serializeSidecar } from '../sidecar-format';
+import type { Sidecar } from '../types';
+import { SIDECAR_SCHEMA_VERSION } from '../types';
+
+import { FakeVault } from './fakes';
+
+function vec(values: number[]): Float32Array {
+  // L2-normalise so cosine reduces to dot product (matches production).
+  let mag = 0;
+  for (const v of values) mag += v * v;
+  const norm = mag === 0 ? 1 : Math.sqrt(mag);
+  const out = new Float32Array(values.length);
+  for (const [index, value] of values.entries()) {
+    out[index] = value / norm;
+  }
+  return out;
+}
+
+function makeSidecar(path: string, chunks: { text: string; vector: Float32Array }[]): Sidecar {
+  return {
+    schemaVersion: SIDECAR_SCHEMA_VERSION,
+    source: path,
+    sourceHash: 'h',
+    extractedAt: 1,
+    embeddingModel: 'test',
+    embeddings: chunks.map((chunk, index) => ({
+      index,
+      text: chunk.text,
+      vector: chunk.vector,
+      start: 0,
+      end: chunk.text.length,
+    })),
+  };
+}
+
+class TestVault extends FakeVault {
+  paths: string[] = [];
+  seedNote(path: string): void {
+    this.setNote(path, 'irrelevant');
+    if (!this.paths.includes(path)) this.paths.push(path);
+  }
+  listNotes(): Promise<string[]> {
+    return Promise.resolve([...this.paths]);
+  }
+}
+
+describe('cosine', () => {
+  it('returns 1 for identical normalised vectors', () => {
+    const a = vec([1, 0, 0]);
+    expect(cosine(a, a)).toBeCloseTo(1, 5);
+  });
+
+  it('returns 0 for orthogonal vectors', () => {
+    expect(cosine(vec([1, 0]), vec([0, 1]))).toBeCloseTo(0, 5);
+  });
+
+  it('returns 0 for zero magnitude', () => {
+    expect(cosine(new Float32Array([0, 0]), new Float32Array([1, 0]))).toBe(0);
+  });
+
+  it('returns 0 for mismatched lengths', () => {
+    expect(cosine(new Float32Array([1]), new Float32Array([1, 0]))).toBe(0);
+  });
+});
+
+function buildVault(): TestVault {
+  const vault = new TestVault();
+  vault.seedNote('notes/a.md');
+  vault.seedNote('notes/b.md');
+  vault.seedNote('notes/c.md');
+  vault.setSidecar(
+    '.memory/notes/a.md',
+    serializeSidecar(
+      makeSidecar('notes/a.md', [
+        { text: 'apple pie recipe', vector: vec([1, 0, 0]) },
+        { text: 'cake frosting tips', vector: vec([0, 1, 0]) },
+      ]),
+    ),
+  );
+  vault.setSidecar(
+    '.memory/notes/b.md',
+    serializeSidecar(
+      makeSidecar('notes/b.md', [{ text: 'banana bread variations', vector: vec([0.9, 0.4, 0]) }]),
+    ),
+  );
+  // Notes c.md has no sidecar → silently skipped.
+  return vault;
+}
+
+describe('retrieve', () => {
+  it('returns empty result for an empty query', async () => {
+    const vault = buildVault();
+    const result = await retrieve(vault, '', { embedQuery: () => Promise.resolve(vec([1, 0, 0])) });
+    expect(result.chunks).toEqual([]);
+    expect(result.noteRefs).toEqual([]);
+  });
+
+  it('ranks chunks by cosine similarity to the query', async () => {
+    const vault = buildVault();
+    const result = await retrieve(vault, 'apple', {
+      k: 3,
+      embedQuery: () => Promise.resolve(vec([1, 0, 0])),
+    });
+    expect(result.chunks).toHaveLength(3);
+    expect(result.chunks[0]?.notePath).toBe('notes/a.md');
+    expect(result.chunks[0]?.text).toBe('apple pie recipe');
+    expect(result.chunks[0]?.score).toBeCloseTo(1, 5);
+    // banana (0.9, 0.4, 0) should rank above cake (0, 1, 0) for query [1,0,0].
+    expect(result.chunks[1]?.notePath).toBe('notes/b.md');
+    expect(result.chunks[2]?.notePath).toBe('notes/a.md');
+  });
+
+  it('respects k', async () => {
+    const vault = buildVault();
+    const result = await retrieve(vault, 'apple', {
+      k: 1,
+      embedQuery: () => Promise.resolve(vec([1, 0, 0])),
+    });
+    expect(result.chunks).toHaveLength(1);
+  });
+
+  it('returns distinct noteRefs in score-rank order', async () => {
+    const vault = buildVault();
+    const result = await retrieve(vault, 'apple', {
+      k: 5,
+      embedQuery: () => Promise.resolve(vec([1, 0, 0])),
+    });
+    expect(result.noteRefs).toEqual(['notes/a.md', 'notes/b.md']);
+  });
+
+  it('skips sidecars whose vector dimensions do not match', async () => {
+    const vault = new TestVault();
+    vault.seedNote('notes/a.md');
+    vault.setSidecar(
+      '.memory/notes/a.md',
+      serializeSidecar(
+        makeSidecar('notes/a.md', [
+          // 3-dim chunk
+          { text: 'apple', vector: vec([1, 0, 0]) },
+          // 2-dim chunk (mismatched)
+          { text: 'banana', vector: vec([1, 0]) },
+        ]),
+      ),
+    );
+    const result = await retrieve(vault, 'apple', {
+      k: 5,
+      embedQuery: () => Promise.resolve(vec([1, 0, 0])),
+    });
+    expect(result.chunks).toHaveLength(1);
+    expect(result.chunks[0]?.text).toBe('apple');
+  });
+});
+
+describe('assembleContext', () => {
+  it('packs all chunks when under budget', () => {
+    const result = {
+      query: 'what is X?',
+      chunks: [
+        {
+          notePath: 'notes/a.md',
+          chunkIndex: 0,
+          text: 'short',
+          heading: 'Intro',
+          score: 0.9,
+        },
+        { notePath: 'notes/b.md', chunkIndex: 0, text: 'tiny', score: 0.7 },
+      ],
+      noteRefs: ['notes/a.md', 'notes/b.md'],
+    };
+    const assembled = assembleContext(result, { contextWindow: 1000, retrievalFraction: 0.7 });
+    expect(assembled.systemPrompt).toBe(SYSTEM_PROMPT);
+    expect(assembled.includedChunks).toHaveLength(2);
+    expect(assembled.droppedChunks).toHaveLength(0);
+    expect(assembled.userPrompt).toContain('User question: what is X?');
+    expect(assembled.userPrompt).toContain('[notes/a.md (Intro)]');
+    expect(assembled.userPrompt).toContain('[notes/b.md]');
+  });
+
+  it('returns the bare query when no chunks were retrieved', () => {
+    const assembled = assembleContext({ query: 'hello', chunks: [], noteRefs: [] });
+    expect(assembled.userPrompt).toBe('hello');
+    expect(assembled.includedChunks).toEqual([]);
+  });
+
+  it('drops lowest-ranked chunks first when over budget', () => {
+    const result = {
+      query: 'q',
+      chunks: [
+        {
+          notePath: 'notes/a.md',
+          chunkIndex: 0,
+          text: 'A'.repeat(100),
+          score: 0.9,
+        },
+        {
+          notePath: 'notes/b.md',
+          chunkIndex: 0,
+          text: 'B'.repeat(100),
+          score: 0.8,
+        },
+        {
+          notePath: 'notes/c.md',
+          chunkIndex: 0,
+          text: 'C'.repeat(100),
+          score: 0.7,
+        },
+      ],
+      noteRefs: ['notes/a.md', 'notes/b.md', 'notes/c.md'],
+    };
+    // Use a tiny budget so only the first chunk fits.
+    const assembled = assembleContext(result, {
+      contextWindow: 100,
+      retrievalFraction: 0.5,
+      countTokens: (text) => text.length,
+    });
+    expect(assembled.includedChunks).toHaveLength(1);
+    expect(assembled.includedChunks[0]?.notePath).toBe('notes/a.md');
+    expect(assembled.droppedChunks).toHaveLength(2);
+    expect(assembled.droppedChunks[0]?.notePath).toBe('notes/b.md');
+  });
+
+  it('always keeps at least one chunk even if it exceeds the budget', () => {
+    // First chunk alone is over budget. We keep it (better than no context).
+    const result = {
+      query: 'q',
+      chunks: [
+        {
+          notePath: 'notes/a.md',
+          chunkIndex: 0,
+          text: 'A'.repeat(1000),
+          score: 0.9,
+        },
+        {
+          notePath: 'notes/b.md',
+          chunkIndex: 0,
+          text: 'B',
+          score: 0.8,
+        },
+      ],
+      noteRefs: ['notes/a.md', 'notes/b.md'],
+    };
+    const assembled = assembleContext(result, {
+      contextWindow: 100,
+      retrievalFraction: 0.5,
+      countTokens: (text) => text.length,
+    });
+    expect(assembled.includedChunks).toHaveLength(1);
+    expect(assembled.includedChunks[0]?.notePath).toBe('notes/a.md');
+  });
+});

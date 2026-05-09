@@ -5,7 +5,7 @@
 
 import type { ChatCompletionMessageParam } from '@mlc-ai/web-llm';
 
-import { GEMMA_MODEL_ID, getEngine } from '$lib/llm/runtime';
+import { GEMMA_MODEL_ID, getEngine, gpuLease } from '$lib/llm/runtime';
 import { logError } from '$lib/log';
 import { syncEngine } from '$lib/sync';
 import { subscribeToVaultChanges, vault } from '$lib/vault';
@@ -18,7 +18,6 @@ import {
   type ExtractionQueue,
   type ExtractionVault,
 } from './extraction-queue';
-import { createGpuLease, type GpuLease } from './gpu-lease';
 import {
   createIndexedDatabaseQueueStorage,
   noopQueueStorage,
@@ -52,6 +51,15 @@ export { createEmbeddingQueue } from './embedding-queue';
 export { createExtractionQueue } from './extraction-queue';
 export { filterStatus, filterStatus as filterSidecarConflicts } from './sidecar-conflict';
 export { createSidecarConflictResolver } from './sidecar-conflict';
+export { retrieve, cosine, assembleContext, SYSTEM_PROMPT } from './retrieve';
+export type {
+  RetrievedChunk,
+  RetrievalResult,
+  RetrieveOptions,
+  AssembledContext,
+  AssembleOptions,
+  RetrievalVault,
+} from './retrieve';
 
 // Production singleton wiring -------------------------------------------------
 
@@ -75,7 +83,9 @@ const queueStorage: QueueStorage =
     ? noopQueueStorage
     : createIndexedDatabaseQueueStorage();
 
-export const gpuLease: GpuLease = createGpuLease();
+// `gpuLease` is owned by `$lib/llm/runtime` (chat acquires it most often).
+// We just re-expose it here so memory callers can keep using `$lib/memory`.
+export { gpuLease } from '$lib/llm/runtime';
 
 export const embeddingQueue: EmbeddingQueue = createEmbeddingQueue({
   vault: productionVault,
@@ -152,7 +162,11 @@ export function teardownMemoryForTest(): void {
 }
 
 export function notifyMemoryOfChange(path: string): void {
+  // Sidecars (.memory/...) are written by the queues themselves — re-enqueueing
+  // would loop. Chat sessions (.chats/...) sync via the same vault → sync
+  // pipeline, but we don't want to embed them either.
   if (isSidecarPath(path)) return;
+  if (path.startsWith('.chats/')) return;
   embeddingQueue.enqueue(path);
   extractionQueue.enqueue(path);
 }

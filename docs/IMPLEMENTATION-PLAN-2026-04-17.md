@@ -326,34 +326,37 @@ Spec deltas after Phase 3 review (see §10 2026-05-09 for the underlying experie
 ## Phase 5 — Chat & retrieval
 
 ### LLM Runtime polish (`src/lib/llm/`)
-- [ ] `LLMRuntime` class with `loadModel`, `unloadModel`, `chat`, `currentVariant`
-- [ ] Model selection UI on `/setup` and in settings: Gemma variants with download sizes + VRAM estimates
-- [ ] Download progress in status bar (`gemma-4b loading 43%`)
-- [ ] Model cached across sessions (WebLLM handles this)
+- [x] Functional API kept (`loadModel`, `unloadModel`, `streamChat`, `currentVariant`, `getEngine`) instead of a class — matches the rest of the codebase. `loadModel` accepts any catalogue id and unloads any prior engine first; `unloadModel` releases WebGPU resources cleanly.
+- [x] `MODEL_VARIANTS` catalogue at `src/lib/llm/variants.ts` with id, label, parameters, downloadMb, vramMb, contextWindow, description. UI consumes this via the variant picker on `/setup`.
+- [x] Model selection UI on `/setup`: radio-button list of variants with download size + VRAM. Button label adapts (`Load X` / `Reload X` / `Switch to X`). Description text per variant ("Smallest option…", "Best quality…").
+- [x] Download progress in status bar — already wired in Phase 1 (`loading 43%`); the variant id is preserved through `model.id` so the status bar shows whichever variant is loaded.
+- [x] Model cached across sessions (WebLLM handles this; switching variants never re-downloads cached weights).
+- [x] **GpuLease integration:** `streamChat` acquires the lease as `'chat'` for the duration of the stream. The extraction queue holds the lease as `'extract'` and yields when `tryAcquire('chat')` is contended. Lease singleton owned by `$lib/llm/runtime` (re-exported from `$lib/memory`) — see Decision Log 2026-05-09 chat phase entry for why this lives in llm rather than memory.
 
 ### Transcriber (`src/lib/transcribe/`)
-- [ ] `Transcriber` interface per architecture §6
-- [ ] `WebSpeechTranscriber` implementation
-- [ ] Capability check: `isAvailable()` returns false on unsupported browsers
+- [x] `Transcriber` interface per architecture §6 — `isAvailable()`, `start()`, `stop()`, `TranscriptEvent` union.
+- [x] `WebSpeechTranscriber` implementation in `web-speech.ts`. Wraps `SpeechRecognition` / `webkitSpeechRecognition`; converts the event stream into an `AsyncIterable<TranscriptEvent>` with a queue + waiter pattern.
+- [x] Capability check: `isAvailable()` calls a `recognitionFactory()` (DI seam). Production resolves the global constructor; tests inject a fake. Returns false on Firefox + non-browser environments.
 
 ### Retrieval (`src/lib/memory/retrieve.ts`)
-- [ ] `retrieve(query: string, k=5)` → `{ chunks, noteRefs }`
-- [ ] Embed query, load all sidecar embeddings, cosine-rank, return top-K
-- [ ] Assemble context prompt per architecture §10
-- [ ] Budget chunks to ~70% of Gemma context window
+- [x] `retrieve(vault, query, options?)` → `{ query, chunks, noteRefs }`. Vault arg is a minimal `RetrievalVault` (just `readRaw` + `listNotes`); test passes a fake.
+- [x] Embed query → walk every note → load sidecar → cosine-score every chunk → top-K (default 5). Skips notes with no sidecar and chunks with mismatched dimensions.
+- [x] `assembleContext(result, options?)` formats per architecture §10. System prompt instructs the model to cite note paths and refuse to fabricate. Body lists `- [path (heading)] text` per chunk + `User question: …`.
+- [x] Budget chunks to ~70% of context window. Drops lowest-scored chunks first; always keeps at least one chunk so the model gets *some* context. `countTokens` callback overridable; default heuristic uses chars × 0.3.
 
 ### Chat UI
-- [ ] Message list (user + assistant, streaming-aware)
-- [ ] Text input with terminal-style blinking cursor (respects `prefers-reduced-motion`)
-- [ ] Mic button calling `Transcriber` (hidden if `isAvailable() === false`)
-- [ ] Show "based on: note A, note B" on each assistant message (links to notes)
-- [ ] Chat history persisted in `openbrain-chat` IndexedDB store (not synced)
-- [ ] `/chat` loads the last N messages on mount
+- [x] Message list with role badges (`you` / `ai`), streaming-aware (`▋` cursor on the in-flight assistant message; respects `prefers-reduced-motion`).
+- [x] Text input + Send button. Enter submits, Shift-Enter inserts newline.
+- [x] Mic button calling `Transcriber` (hidden when `isAvailable()` is false). Shows toggled state when listening.
+- [x] "based on: note A, note B" citations under each assistant message, linking to `/browse/<path>`. During the in-flight stream, the UI shows `retrieving relevant notes…` then citations as soon as the embed → cosine pass returns.
+- [x] **Chat history persisted to the vault, not IndexedDB.** The architecture said "openbrain-chat IndexedDB store, not synced"; the user explicitly opted to sync chats in Phase 5 (see Decision Log 2026-05-09 chat phase entry). Sessions live at `.chats/<session-id>.md` in markdown form, ride the existing vault → sync pipeline, and round-trip across devices.
+- [x] `/chat` lists prior sessions in a sidebar (most-recent first), loads the most-recent one on mount, and exposes `+ New` to start a fresh session.
 
 ### Exit criteria
-- [ ] Ask Gemma a question about a note you wrote; it retrieves relevant context and answers with citations.
-- [ ] Voice input works on supported browsers; gracefully hidden on others.
-- [ ] `npm run check` green
+- [x] Ask Gemma a question about a note you wrote; it retrieves relevant context and answers with citations. _Verified manually 2026-05-09 in Chrome: typed "What does my Phase 4 test note say about embedding?", got a response that quoted the note's content + linked back to the correct note path (top-ranked) plus two adjacent notes._
+- [x] Voice input works on supported browsers; gracefully hidden on others. Mic button hidden in environments without `SpeechRecognition` (verified via the test recogniser-factory returning undefined).
+- [x] Chat sessions sync across devices via the same `.chats/` pipeline that Phase 3 built for notes. Verified via the `synced Xs ago` status bar transition after a turn lands.
+- [x] `npm run check` green — 138 tests across 19 files, types/lint/format clean.
 - [ ] Review Phase 6's tasks; attachments may need to coordinate with sync flows you've now built, adjust accordingly
 
 ---
@@ -537,6 +540,13 @@ Record non-obvious decisions made during implementation that future sessions sho
   7. **`abortOnConflict: false` on `pull`** is documented in isomorphic-git's docs but missing from its `.d.ts` (the type only lists it on `merge`). Used `@ts-expect-error` with a comment pointing at the upstream gap; remove when isomorphic-git ships an updated typings.
   8. **Tier 2 resolver re-parses the live document on click** rather than trusting the cached `ConflictHunk` offsets. Between paint and click, another resolution may have shifted the offsets — re-parsing is cheap (≤ a few KB) and avoids bugs from stale offsets.
 - `2026-05-08` — **Auth refresh for long-lived sessions.** GitHub App user tokens from device flow expire after 8 hours; the refresh token lives 6 months. The first cut stored only the access token, so reopening the tab the next day landed on `✓ Signed in` + `401 Unauthorized` on every API call. Reshape: `storage.ts` persists an `AuthBundle` ({ accessToken, refreshToken, accessExpiresAt, refreshExpiresAt }); `device-flow.ts` captures `expires_in` + `refresh_token_expires_in` and exposes a `refreshAccessToken` (POST `grant_type=refresh_token`). New `session.ts` is the in-memory bundle owner: `initSession` hydrates on layout mount, refreshes proactively when <5min remain, and clears the session if the refresh token itself dies. `getValidAccessToken` is single-flight (concurrent callers join the same exchange — GitHub rotates the refresh token on every refresh, so parallel requests would invalidate each other). Layout polls `getValidAccessToken` every 60s as a refresh trigger; setup uses it before clone.
+- `2026-05-09` — **Phase 5 implementation notes (deltas from the spec).**
+  1. **Chat history is synced to the repo, not IndexedDB-only.** Architecture §5 specified the `openbrain-chat` IndexedDB store (not synced); during Phase 5 implementation the user explicitly asked to sync chats too. Sessions now live at `.chats/<session-id>.md` in markdown form (frontmatter + `## role · timestamp` blocks). They ride the existing vault → SyncEngine pipeline. Trade-off accepted: chats inflate the repo size and may include sensitive content in the user's git history. The user can `.gitignore` `.chats/` to opt out per-repo.
+  2. **`gpuLease` singleton lives in `$lib/llm/runtime`, not `$lib/memory`.** Both modules need it, and we discovered a memory→llm→memory import cycle at evaluation time when memory owned it (memory/index imports llm/runtime for `getEngine`/`GEMMA_MODEL_ID`; llm/runtime needed memory for the lease). Moved to llm/runtime which imports the factory directly from the leaf module `$lib/memory/gpu-lease` (not the barrel) — that's the loop-breaking edge.
+  3. **Vault-write filter for chat paths.** `notifyMemoryOfChange` already skipped `.memory/...` (sidecars writing back from the queue); we extended it to also skip `.chats/...` so chat session writes don't get embedded as if they were notes. Path-based filter is brittle long-term but matches the existing sidecar pattern; revisit if more `.foo/` directories appear.
+  4. **`SidecarReadVault` split off from `SidecarVault`.** Retrieval only needs `readRaw`; including `writeNote` in `RetrievalVault` would have forced the chat page to ship a no-op writer. Keeping the read path narrow (and a `SidecarVault extends SidecarReadVault` for the write side) is structurally cleaner.
+  5. **`approxTokens` heuristic (0.3 tokens/char).** Used to budget retrieval context without paying the embedder-tokenizer cost on every retrieval. Order-of-magnitude correct for English; tighter callers can pass `countTokens: model.countTokens` explicitly. Phase 9 should sanity-check this on real-world chunks.
+  6. **`MODEL_VARIANTS` catalogue is advisory, not authoritative.** WebLLM ships more models than we surface in the picker (`runtime.loadModel` accepts any id). The catalogue exists for the UI; future settings pages or tests can pass arbitrary ids. Decision deferred: a "custom variant" text input in settings — not needed for MVP.
 - `2026-05-09` — **Phase 4 implementation notes (deltas from the spec).**
   1. **Sidecar on-disk format diverges from architecture §3.** The architecture sketched embeddings "inline in frontmatter as base64". In practice, multi-chunk sidecars + the existing handwritten frontmatter parser would need a richer YAML implementation (nested arrays of objects). Instead, the sidecar uses a thin frontmatter (`schema_version`, `source`, `source_hash`, `extracted_at`, `embedding_model`, optional `extraction_model`) and stuffs the bulk (`embeddings[]`, `summary`, `entities`, etc.) into a fenced ```json``` body. This is machine-only — sidecars are never user-edited — so JSON is fine, and pretty-printing keeps git diffs legible. Conflict auto-resolution doesn't depend on the format being merge-friendly because we always pick whichever side has the later `extractedAt`.
   2. **Vault → memory wiring uses a fan-out subscription**, not a chained `onChange`. `vault/index.ts` exposes `subscribeToVaultChanges(fn)` and registers the SyncEngine as the first subscriber on module evaluation. `bootstrapMemory()` (called from the layout) registers the second subscriber that calls `notifyMemoryOfChange(path)`. Avoids a `vault → memory → vault` import cycle: the memory module never has to be imported by `$lib/vault`.

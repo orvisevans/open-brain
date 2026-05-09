@@ -18,13 +18,16 @@ import {
 } from './sidecar-format';
 import type { Sidecar } from './types';
 
-export interface SidecarVault {
+export interface SidecarReadVault {
   readRaw(path: NotePath): Promise<string>;
+}
+
+export interface SidecarVault extends SidecarReadVault {
   writeNote(path: NotePath, content: string): Promise<void>;
 }
 
 export async function readSidecar(
-  vault: SidecarVault,
+  vault: SidecarReadVault,
   notePath: NotePath,
 ): Promise<Sidecar | undefined> {
   const sidecarPath = noteToSidecarPath(notePath);
@@ -59,7 +62,7 @@ export async function writeSidecar(vault: SidecarVault, sidecar: Sidecar): Promi
  * the current note hash. Used by the embedding queue to skip up-to-date notes.
  */
 export async function isUpToDate(
-  vault: SidecarVault,
+  vault: SidecarReadVault,
   notePath: NotePath,
   noteHash: string,
 ): Promise<boolean> {
