@@ -52,6 +52,12 @@ export function registerHandler(kind: ParsedCommand['kind'], handler: SlashHandl
 
 export async function dispatch(cmd: ParsedCommand, context: SlashContext): Promise<DispatchResult> {
   if (cmd.kind === 'unknown') {
+    // `reason` distinguishes "recognized command, missing args" from
+    // "totally unrecognized command" — the parser supplies it for the
+    // former so the user gets actionable feedback.
+    if (cmd.reason !== undefined) {
+      return { kind: 'error', message: cmd.reason };
+    }
     return { kind: 'error', message: `Unknown command: ${cmd.raw}` };
   }
   const handler = handlers.get(cmd.kind);

@@ -17,7 +17,10 @@ export type ParsedCommand =
   | { kind: 'list'; name: string; item?: string }
   | { kind: 'append'; target: NotePath; body: string; bullet: boolean }
   | { kind: 'organize'; target: NotePath }
-  | { kind: 'unknown'; raw: string };
+  // `unknown` covers both "totally unrecognized" (no `reason`) and
+  // "recognized command but missing required args" (with `reason`).
+  // Dispatcher uses `reason` when present for a friendlier error message.
+  | { kind: 'unknown'; raw: string; reason?: string };
 
 export function parseSlashCommand(input: string): ParsedCommand | undefined {
   const trimmed = input.trimStart();
@@ -83,14 +86,22 @@ function parseSave(arguments_: string): ParsedCommand {
 
 function parseJournal(arguments_: string): ParsedCommand {
   if (arguments_.trim() === '') {
-    return { kind: 'unknown', raw: '/journal' };
+    return {
+      kind: 'unknown',
+      raw: '/journal',
+      reason: 'Provide an entry: /journal <text>',
+    };
   }
   return { kind: 'journal', body: arguments_ };
 }
 
 function parseNote(arguments_: string): ParsedCommand {
   if (arguments_.trim() === '') {
-    return { kind: 'unknown', raw: '/note' };
+    return {
+      kind: 'unknown',
+      raw: '/note',
+      reason: 'Provide a title: /note <title>',
+    };
   }
   const newlineIndex = arguments_.indexOf('\n');
   const titleLine = newlineIndex === -1 ? arguments_ : arguments_.slice(0, newlineIndex);
@@ -106,7 +117,11 @@ function parseNote(arguments_: string): ParsedCommand {
     .trim();
 
   if (titleWithoutTags === '') {
-    return { kind: 'unknown', raw: '/note' };
+    return {
+      kind: 'unknown',
+      raw: '/note',
+      reason: 'Provide a title: /note <title>',
+    };
   }
 
   return {
@@ -120,7 +135,11 @@ function parseNote(arguments_: string): ParsedCommand {
 function parseList(arguments_: string): ParsedCommand {
   const trimmed = arguments_.trim();
   if (trimmed === '') {
-    return { kind: 'unknown', raw: '/list' };
+    return {
+      kind: 'unknown',
+      raw: '/list',
+      reason: 'Provide a list name: /list <name> [item]',
+    };
   }
   // Newline form: name on first line, item is the rest. Useful for multi-line items.
   const newlineIndex = trimmed.indexOf('\n');
@@ -128,7 +147,11 @@ function parseList(arguments_: string): ParsedCommand {
     const name = trimmed.slice(0, newlineIndex).trim();
     const item = trimmed.slice(newlineIndex + 1).trim();
     return name === ''
-      ? { kind: 'unknown', raw: '/list' }
+      ? {
+          kind: 'unknown',
+          raw: '/list',
+          reason: 'Provide a list name: /list <name> [item]',
+        }
       : { kind: 'list', name, ...(item !== '' && { item }) };
   }
   // Single-line: first whitespace-delimited token is the name; rest is the item.
@@ -146,7 +169,11 @@ function parseList(arguments_: string): ParsedCommand {
 function parseOrganize(arguments_: string, trimmed: string): ParsedCommand {
   const targetMatch = MATCH_AT_TOKEN.exec(arguments_);
   if (targetMatch === null) {
-    return { kind: 'unknown', raw: trimmed };
+    return {
+      kind: 'unknown',
+      raw: trimmed,
+      reason: 'Provide a target: /organize @path/to/note.md',
+    };
   }
   return { kind: 'organize', target: mentionToPath(targetMatch[1] ?? '') };
 }
@@ -154,7 +181,11 @@ function parseOrganize(arguments_: string, trimmed: string): ParsedCommand {
 function parseAppend(arguments_: string): ParsedCommand {
   const targetMatch = MATCH_AT_TOKEN.exec(arguments_);
   if (targetMatch === null) {
-    return { kind: 'unknown', raw: `/append${arguments_ === '' ? '' : ` ${arguments_}`}` };
+    return {
+      kind: 'unknown',
+      raw: `/append${arguments_ === '' ? '' : ` ${arguments_}`}`,
+      reason: 'Provide a target: /append @path <body>',
+    };
   }
   const target = mentionToPath(targetMatch[1] ?? '');
   let remaining = arguments_.replace(targetMatch[0], ' ');

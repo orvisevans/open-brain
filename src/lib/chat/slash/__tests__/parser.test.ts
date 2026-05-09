@@ -56,9 +56,13 @@ describe('parseSlashCommand', () => {
   });
 
   describe('/journal', () => {
-    it('rejects empty body', () => {
-      expect(parseSlashCommand('/journal')).toEqual({ kind: 'unknown', raw: '/journal' });
-      expect(parseSlashCommand('/journal   ')).toEqual({ kind: 'unknown', raw: '/journal' });
+    it('rejects empty body with a friendly reason', () => {
+      const result = parseSlashCommand('/journal');
+      expect(result?.kind).toBe('unknown');
+      if (result?.kind === 'unknown') {
+        expect(result.raw).toBe('/journal');
+        expect(result.reason).toContain('Provide an entry');
+      }
     });
     it('captures the body verbatim', () => {
       expect(parseSlashCommand('/journal today I felt great')).toEqual({
@@ -75,8 +79,12 @@ describe('parseSlashCommand', () => {
   });
 
   describe('/note', () => {
-    it('rejects empty title', () => {
-      expect(parseSlashCommand('/note')).toEqual({ kind: 'unknown', raw: '/note' });
+    it('rejects empty title with a friendly reason', () => {
+      const result = parseSlashCommand('/note');
+      expect(result?.kind).toBe('unknown');
+      if (result?.kind === 'unknown') {
+        expect(result.reason).toContain('Provide a title');
+      }
     });
     it('title only', () => {
       expect(parseSlashCommand('/note My ideas')).toEqual({
@@ -99,13 +107,22 @@ describe('parseSlashCommand', () => {
       });
     });
     it('rejects /note with only hashtags (no real title)', () => {
-      expect(parseSlashCommand('/note #empty')).toEqual({ kind: 'unknown', raw: '/note' });
+      const result = parseSlashCommand('/note #empty');
+      expect(result?.kind).toBe('unknown');
+      if (result?.kind === 'unknown') {
+        expect(result.raw).toBe('/note');
+        expect(result.reason).toContain('Provide a title');
+      }
     });
   });
 
   describe('/list', () => {
-    it('rejects empty name', () => {
-      expect(parseSlashCommand('/list')).toEqual({ kind: 'unknown', raw: '/list' });
+    it('rejects empty name with a friendly reason', () => {
+      const result = parseSlashCommand('/list');
+      expect(result?.kind).toBe('unknown');
+      if (result?.kind === 'unknown') {
+        expect(result.reason).toContain('Provide a list name');
+      }
     });
     it('name only — no item', () => {
       expect(parseSlashCommand('/list grocery')).toEqual({
@@ -130,11 +147,13 @@ describe('parseSlashCommand', () => {
   });
 
   describe('/append', () => {
-    it('requires @target', () => {
-      expect(parseSlashCommand('/append body without target')).toEqual({
-        kind: 'unknown',
-        raw: '/append body without target',
-      });
+    it('requires @target with a friendly reason', () => {
+      const result = parseSlashCommand('/append body without target');
+      expect(result?.kind).toBe('unknown');
+      if (result?.kind === 'unknown') {
+        expect(result.raw).toBe('/append body without target');
+        expect(result.reason).toContain('Provide a target');
+      }
     });
     it('parses @target + body', () => {
       expect(parseSlashCommand('/append @notes/foo some new content')).toEqual({
