@@ -29,6 +29,7 @@
     type ParsedCommand,
     type SlashContext,
   } from '$lib/chat/slash';
+  import { suggestCommand } from '$lib/chat/intent-suggester';
   import {
     cancelSpeech,
     isTtsAvailable,
@@ -77,6 +78,13 @@
   const ttsAvailable = isTtsAvailable();
   let ttsEnabled = $state(loadTtsEnabled());
 
+  // Phase 5.5: embedding-based intent suggester. Promotes the most likely
+  // chip in the command bar after a typing-pause debounce. Never auto-routes;
+  // a wrong promotion costs one tap to ignore.
+  let promotedCommand = $state<string | undefined>(undefined);
+  let suggesterTimer: ReturnType<typeof setTimeout> | undefined;
+  const SUGGESTER_DEBOUNCE_MS = 700;
+
   // Hydrate the most recent session on mount; create a fresh one if none.
   $effect(() => {
     void (async () => {
@@ -106,6 +114,27 @@
         logError('chat/load-mention-paths', { error });
       }
     })();
+  });
+
+  // Intent suggester: re-run on a typing-pause debounce so the chip bar
+  // gets a hint about what the user is reaching for. Slash inputs already
+  // know their command — skip the embed in that case.
+  $effect(() => {
+    const trimmed = input.trim();
+    if (suggesterTimer !== undefined) clearTimeout(suggesterTimer);
+    if (trimmed === '' || trimmed.startsWith('/')) {
+      promotedCommand = undefined;
+      return;
+    }
+    suggesterTimer = setTimeout(() => {
+      const captured = trimmed;
+      void (async () => {
+        const result = await suggestCommand(captured);
+        // Reject the result if the input has moved on while we were embedding.
+        if (input.trim() !== captured) return;
+        promotedCommand = result?.command;
+      })();
+    }, SUGGESTER_DEBOUNCE_MS);
   });
 
   async function createSession(): Promise<ChatSession> {
@@ -598,7 +627,12 @@
           />
         </div>
       {/if}
-      <CommandBar commands={COMMAND_LIST} stats={commandStats} onPick={pickChip} />
+      <CommandBar
+        commands={COMMAND_LIST}
+        stats={commandStats}
+        onPick={pickChip}
+        promote={promotedCommand}
+      />
       <div class="input-row">
         <textarea
           rows={3}

@@ -6,9 +6,10 @@
     stats: CommandStats;
     onPick: (command: string) => void;
     // Hint shown in the suggester slot; if defined, the matching command is
-    // promoted to the leading position. (Reserved for the embedding suggester
-    // wired in a later chunk.)
-    promote?: string;
+    // promoted to the leading position. The `| undefined` is required for
+    // exactOptionalPropertyTypes — callers pass it inline from a `$state`
+    // that goes through phases of "no suggestion" and "has suggestion".
+    promote?: string | undefined;
   }
 
   const { commands, stats, onPick, promote }: Properties = $props();
