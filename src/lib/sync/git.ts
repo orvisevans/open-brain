@@ -26,6 +26,7 @@ import http from 'isomorphic-git/http/web';
 
 import type { NotePath } from '$lib/vault/types';
 
+import { diff3MergeDriver } from './merge-driver';
 import type { GitAuthor, GitOps, PullResult, PushResult } from './types';
 
 // Shared filesystem instance — one IndexedDB-backed FS for the whole app.
@@ -180,15 +181,23 @@ async function pull(token: string, author: GitAuthor): Promise<PullResult> {
     // isomorphic-git's `pull` does fetch + merge in one shot. We use
     // `abortOnConflict: false` so conflict markers are written into the
     // working files — that's what tier 2's resolver UI inspects.
-    await gitPull({
+    //
+    // The default mergeDriver in 1.37 throws MergeConflictError WITHOUT
+    // writing markers to the workdir, so we provide our own driver that
+    // emits diff3-style markers (see merge-driver.ts). Without this the
+    // editor would have nothing to decorate and the user no way to resolve.
+    // pull() forwards both `abortOnConflict` and `mergeDriver` to its
+    // internal merge() call, but isomorphic-git's `.d.ts` declares them
+    // only on merge() — not pull. The runtime accepts both fine.
+    const pullArguments = {
       ...gitDefaults(token),
       ref: branch,
       singleBranch: true,
       author: { name: author.name, email: author.email },
-      // @ts-expect-error abortOnConflict is documented but missing from the
-      // pull() signature in isomorphic-git's .d.ts (it forwards to merge()).
+      mergeDriver: diff3MergeDriver,
       abortOnConflict: false,
-    });
+    } as Parameters<typeof gitPull>[0];
+    await gitPull(pullArguments);
     return { kind: 'merged' };
   } catch (error: unknown) {
     if (error instanceof Errors.MergeConflictError) {
