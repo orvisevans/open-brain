@@ -164,7 +164,7 @@
         return `◇ syncing (${status.phase})`;
       }
       case 'conflict': {
-        return `! conflict (${String(status.paths.length)})`;
+        return `! conflict (${String(status.paths.length)}) — resolve`;
       }
       case 'offline': {
         return `○ offline (${String(status.pendingPaths.length)} queued)`;
@@ -203,13 +203,23 @@
   <footer class="status-bar" aria-label="App status">
     <span class="status-auth">{auth.user ?? 'not signed in'}</span>
     <span class="status-model">{modelStatus}</span>
-    <span
-      class="status-sync"
-      class:sync-error={syncStatus.kind === 'error' || syncStatus.kind === 'conflict'}
-      class:sync-active={syncStatus.kind === 'syncing' || syncStatus.kind === 'pending'}
-    >
-      {syncStatusLabel}
-    </span>
+    {#if syncStatus.kind === 'conflict' && syncStatus.paths[0] !== undefined}
+      <a
+        class="status-sync sync-error sync-link"
+        href={`/browse/${syncStatus.paths[0]}`}
+        aria-label="Resolve conflict in {syncStatus.paths[0]}"
+      >
+        {syncStatusLabel}
+      </a>
+    {:else}
+      <span
+        class="status-sync"
+        class:sync-error={syncStatus.kind === 'error'}
+        class:sync-active={syncStatus.kind === 'syncing' || syncStatus.kind === 'pending'}
+      >
+        {syncStatusLabel}
+      </span>
+    {/if}
     <span
       class="status-network"
       class:online={network.online}
@@ -275,6 +285,15 @@
 
   .status-sync.sync-error {
     color: var(--color-danger);
+  }
+
+  .status-sync.sync-link {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .status-sync.sync-link:hover {
+    opacity: 0.85;
   }
 
   .status-network.online {

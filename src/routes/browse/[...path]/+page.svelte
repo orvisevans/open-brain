@@ -2,6 +2,7 @@
   import { page } from '$app/state';
 
   import Editor from '$lib/browse/Editor.svelte';
+  import { parseConflicts } from '$lib/browse/conflict';
   import { logError } from '$lib/log';
   import { syncEngine } from '$lib/sync';
   import { vault, type NotePath } from '$lib/vault';
@@ -142,6 +143,12 @@
     return notesList;
   }
 
+  // Count of unresolved conflict hunks in the current document. Drives the
+  // header banner that explains the inline buttons. Re-derives whenever
+  // `content` changes (which happens on load, on user edit, and on
+  // remote-change pulls).
+  const conflictCount = $derived(parseConflicts(content).length);
+
   // The user clicked "keep ours" or "keep theirs" on a conflict hunk in the
   // editor. Persist the resolved content immediately (skipping the 3s
   // autosave debounce — conflicts are urgent) and tell the SyncEngine the
@@ -175,6 +182,14 @@
       {/if}
     </span>
   </header>
+
+  {#if conflictCount > 0}
+    <div class="conflict-banner" role="status" aria-live="polite">
+      <strong>{conflictCount} merge conflict{conflictCount === 1 ? '' : 's'}</strong>
+      in this note. Pick <em>keep ours</em> or <em>keep theirs</em> on each marked block below (or edit
+      the markers out manually).
+    </div>
+  {/if}
 
   {#if loading}
     <p class="empty">Loading…</p>
@@ -228,6 +243,22 @@
   .status.error {
     color: var(--color-danger);
     opacity: 1;
+  }
+
+  .conflict-banner {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    line-height: 1.45;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--color-warn);
+    background: color-mix(in srgb, var(--color-warn) 8%, transparent);
+    color: var(--color-fg);
+  }
+
+  .conflict-banner strong {
+    color: var(--color-warn);
+    font-weight: 600;
+    margin-right: 0.25rem;
   }
 
   .editor-shell {
