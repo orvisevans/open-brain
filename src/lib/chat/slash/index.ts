@@ -16,6 +16,12 @@ export type { ParsedCommand } from './parser';
 export { parseSlashCommand } from './parser';
 export type { DispatchResult, DispatchVault, SlashContext, SlashHandler } from './dispatch';
 export { dispatch, registerHandler, resetHandlers } from './dispatch';
+export {
+  extractSlashFromResponse,
+  loadLlmEmitEnabled,
+  saveLlmEmitEnabled,
+  SLASH_EMIT_SYSTEM_INSTRUCTION,
+} from './llm-emit';
 
 const CORE_HANDLERS: { kind: ParsedCommand['kind']; handler: SlashHandler }[] = [
   { kind: 'save', handler: saveHandler },

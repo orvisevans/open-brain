@@ -24,8 +24,12 @@
   import ProposalCard from '$lib/chat/proposal/ProposalCard.svelte';
   import {
     dispatch as dispatchSlash,
+    extractSlashFromResponse,
+    loadLlmEmitEnabled,
     parseSlashCommand,
     registerCoreHandlers,
+    saveLlmEmitEnabled,
+    SLASH_EMIT_SYSTEM_INSTRUCTION,
     type ParsedCommand,
     type SlashContext,
   } from '$lib/chat/slash';
@@ -84,6 +88,11 @@
   let promotedCommand = $state<string | undefined>(undefined);
   let suggesterTimer: ReturnType<typeof setTimeout> | undefined;
   const SUGGESTER_DEBOUNCE_MS = 700;
+
+  // Phase 5.5: LLM slash-emit. When enabled, we inject an extra system
+  // instruction asking the model to reply with a single /slash line for
+  // write-style requests. Default OFF until the JSON-vs-slash bench lands.
+  let llmEmitEnabled = $state(loadLlmEmitEnabled());
 
   // Hydrate the most recent session on mount; create a fresh one if none.
   $effect(() => {
@@ -208,8 +217,11 @@
       streamingCitations = retrieval.noteRefs;
       phase = 'thinking';
 
+      const systemPrompt = llmEmitEnabled
+        ? `${assembled.systemPrompt}\n\n${SLASH_EMIT_SYSTEM_INSTRUCTION}`
+        : assembled.systemPrompt;
       const llmMessages: ChatCompletionMessageParam[] = [
-        { role: 'system', content: assembled.systemPrompt },
+        { role: 'system', content: systemPrompt },
         // Replay prior turns. Skip system messages — they are slash-command
         // status / confirmation lines and would confuse the model if echoed
         // back as part of conversation history.
@@ -243,6 +255,17 @@
       if (ttsEnabled && accumulated.trim() !== '') {
         speak(accumulated);
       }
+      // LLM slash-emit: if the response is a single slash-command line,
+      // route it through the dispatcher and surface a proposal card.
+      if (llmEmitEnabled) {
+        const slashLine = extractSlashFromResponse(accumulated);
+        if (slashLine !== undefined) {
+          const parsedFromLlm = parseSlashCommand(slashLine);
+          if (parsedFromLlm !== undefined) {
+            await dispatchLlmEmittedSlash(parsedFromLlm, assistantMessage.id, working);
+          }
+        }
+      }
     } catch (error: unknown) {
       logError('chat/send', { error });
     } finally {
@@ -257,6 +280,43 @@
     ttsEnabled = !ttsEnabled;
     saveTtsEnabled(ttsEnabled);
     if (!ttsEnabled) cancelSpeech();
+  }
+
+  function toggleLlmEmit(): void {
+    llmEmitEnabled = !llmEmitEnabled;
+    saveLlmEmitEnabled(llmEmitEnabled);
+  }
+
+  async function dispatchLlmEmittedSlash(
+    parsed: ParsedCommand,
+    sourceTurnId: string,
+    working: ChatSession,
+  ): Promise<void> {
+    if (parsed.kind === 'unknown') return;
+    const last = lastAssistant(working.messages.slice(0, -1));
+    const context: SlashContext = {
+      vault: {
+        readRaw: (path) => vault.readRaw(path),
+        listNotes: () => vault.listNotes(),
+      },
+      now: () => new Date(),
+      sourceTurnId,
+      sessionId: working.id,
+      sessionMessages: working.messages.map((message) => ({
+        role: message.role,
+        content: message.content,
+        timestamp: message.timestamp,
+      })),
+      ...(last !== undefined && { lastAssistantMessage: last }),
+    };
+    try {
+      const result = await dispatchSlash(parsed, context);
+      if (result.kind === 'proposal') {
+        pendingProposals = [...pendingProposals, result.proposal];
+      }
+    } catch (error: unknown) {
+      logError('chat/llm-slash-dispatch', { error });
+    }
   }
 
   // ── Slash commands ──────────────────────────────────────────────────────
@@ -673,6 +733,20 @@
           </button>
         {/if}
         <button
+          class="llm-emit"
+          class:enabled={llmEmitEnabled}
+          onclick={toggleLlmEmit}
+          aria-label={llmEmitEnabled
+            ? 'Disable AI-emitted slash commands'
+            : 'Enable AI-emitted slash commands'}
+          title={llmEmitEnabled
+            ? 'AI may emit slash commands (experimental)'
+            : 'Enable AI to emit slash commands (experimental)'}
+          aria-pressed={llmEmitEnabled}
+        >
+          {llmEmitEnabled ? '⚡' : '○'}
+        </button>
+        <button
           class="send"
           onclick={() => {
             void send();
@@ -872,7 +946,8 @@
 
   button.send,
   button.mic,
-  button.tts {
+  button.tts,
+  button.llm-emit {
     font-family: var(--font-mono);
     font-size: 0.875rem;
     padding: 0.5rem 0.75rem;
@@ -885,7 +960,8 @@
   }
 
   button.mic.listening,
-  button.tts.enabled {
+  button.tts.enabled,
+  button.llm-emit.enabled {
     background: var(--color-accent);
     color: var(--color-bg, var(--color-fg));
   }
