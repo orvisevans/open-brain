@@ -10,12 +10,23 @@
     type ChatMessage,
     type ChatSession,
   } from '$lib/chat';
+  import { applyProposal, type Proposal } from '$lib/chat/proposal';
+  import ProposalCard from '$lib/chat/proposal/ProposalCard.svelte';
+  import {
+    dispatch as dispatchSlash,
+    parseSlashCommand,
+    registerCoreHandlers,
+    type ParsedCommand,
+    type SlashContext,
+  } from '$lib/chat/slash';
   import { logError } from '$lib/log';
   import { streamChat } from '$lib/llm/runtime';
   import { assembleContext, retrieve } from '$lib/memory';
   import { model } from '$lib/state.svelte';
   import { createWebSpeechTranscriber } from '$lib/transcribe';
   import { vault } from '$lib/vault';
+
+  registerCoreHandlers();
 
   // ── Session state ────────────────────────────────────────────────────────
 
@@ -26,6 +37,9 @@
   let streamingOutput = $state('');
   let streamingCitations = $state<string[]>([]);
   let phase = $state<'idle' | 'retrieving' | 'thinking'>('idle');
+  // Phase 5.5: ephemeral proposals from slash commands. Not persisted to the
+  // session — the file (or the absence of one after Discard) is the artifact.
+  let pendingProposals = $state<Proposal[]>([]);
 
   // Hydrate the most recent session on mount; create a fresh one if none.
   $effect(() => {
@@ -70,7 +84,19 @@
   async function send(): Promise<void> {
     const text = input.trim();
     const current = session;
-    if (text === '' || !model.loaded || isStreaming || current === undefined) return;
+    if (text === '' || isStreaming || current === undefined) return;
+
+    // Phase 5.5: slash commands bypass the LLM entirely. Capture and write
+    // operations don't need a model loaded.
+    const parsed = parseSlashCommand(text);
+    if (parsed !== undefined) {
+      input = '';
+      await handleSlashCommand(text, parsed, current);
+      return;
+    }
+
+    // Normal chat path requires the model.
+    if (!model.loaded) return;
     input = '';
     isStreaming = true;
     streamingOutput = '';
@@ -100,11 +126,16 @@
 
       const llmMessages: ChatCompletionMessageParam[] = [
         { role: 'system', content: assembled.systemPrompt },
-        // Replay prior turns from the session for conversational continuity.
-        ...working.messages.slice(0, -1).map((message) => ({
-          role: message.role,
-          content: message.content,
-        })),
+        // Replay prior turns. Skip system messages — they are slash-command
+        // status / confirmation lines and would confuse the model if echoed
+        // back as part of conversation history.
+        ...working.messages
+          .slice(0, -1)
+          .filter((message) => message.role !== 'system')
+          .map((message) => ({
+            role: message.role,
+            content: message.content,
+          })),
         { role: 'user', content: assembled.userPrompt },
       ];
 
@@ -133,6 +164,98 @@
       streamingCitations = [];
       phase = 'idle';
     }
+  }
+
+  // ── Slash commands ──────────────────────────────────────────────────────
+
+  async function handleSlashCommand(
+    text: string,
+    parsed: ParsedCommand,
+    current: ChatSession,
+  ): Promise<void> {
+    const userMessage: ChatMessage = {
+      id: cryptoRandomId(),
+      role: 'user',
+      content: text,
+      timestamp: Date.now(),
+    };
+    let working = await appendMessage(chatVault, current, userMessage);
+    session = working;
+
+    const last = lastAssistant(working.messages.slice(0, -1));
+    const context: SlashContext = {
+      vault: {
+        readRaw: (path) => vault.readRaw(path),
+        listNotes: () => vault.listNotes(),
+      },
+      now: () => new Date(),
+      sourceTurnId: userMessage.id,
+      sessionId: current.id,
+      sessionMessages: working.messages.slice(0, -1).map((message) => ({
+        role: message.role,
+        content: message.content,
+        timestamp: message.timestamp,
+      })),
+      ...(last !== undefined && { lastAssistantMessage: last }),
+    };
+
+    let result;
+    try {
+      result = await dispatchSlash(parsed, context);
+    } catch (error: unknown) {
+      logError('chat/slash-dispatch', { error });
+      result = { kind: 'error' as const, message: 'Dispatch failed unexpectedly.' };
+    }
+
+    if (result.kind === 'error') {
+      const sys: ChatMessage = {
+        id: cryptoRandomId(),
+        role: 'system',
+        content: result.message,
+        timestamp: Date.now(),
+      };
+      working = await appendMessage(chatVault, working, sys);
+      session = working;
+    } else {
+      pendingProposals = [...pendingProposals, result.proposal];
+    }
+    allSessions = [working, ...allSessions.filter((entry) => entry.id !== working.id)];
+  }
+
+  function lastAssistant(
+    messages: ChatMessage[],
+  ): SlashContext['lastAssistantMessage'] | undefined {
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const candidate = messages[index];
+      if (candidate?.role === 'assistant') {
+        return {
+          id: candidate.id,
+          content: candidate.content,
+          timestamp: candidate.timestamp,
+        };
+      }
+    }
+    return undefined;
+  }
+
+  async function handleProposalApply(proposal: Proposal): Promise<void> {
+    const current = session;
+    if (current === undefined) return;
+    await applyProposal(proposal, vault);
+    pendingProposals = pendingProposals.filter((entry) => entry.id !== proposal.id);
+    const sys: ChatMessage = {
+      id: cryptoRandomId(),
+      role: 'system',
+      content: `✓ Saved to ${proposal.target}`,
+      timestamp: Date.now(),
+    };
+    const working = await appendMessage(chatVault, current, sys);
+    session = working;
+    allSessions = [working, ...allSessions.filter((entry) => entry.id !== working.id)];
+  }
+
+  function handleProposalDiscard(proposal: Proposal): void {
+    pendingProposals = pendingProposals.filter((entry) => entry.id !== proposal.id);
   }
 
   function handleKeydown(event: KeyboardEvent): void {
@@ -188,6 +311,12 @@
     if (head !== undefined && head !== '') return head;
     return new Date(entry.lastUpdatedAt).toLocaleString();
   }
+
+  function roleLabel(role: ChatMessage['role']): string {
+    if (role === 'user') return 'you';
+    if (role === 'assistant') return 'ai';
+    return 'sys';
+  }
 </script>
 
 <div class="chat">
@@ -222,7 +351,7 @@
     <div class="messages" role="log" aria-live="polite" aria-label="Chat messages">
       {#each visibleMessages as message (message.id)}
         <div class="message {message.role}">
-          <span class="role">{message.role === 'user' ? 'you' : 'ai'}</span>
+          <span class="role">{roleLabel(message.role)}</span>
           <div class="bubble">
             <pre class="content">{message.content}</pre>
             {#if message.retrievedContext !== undefined && message.retrievedContext.length > 0}
@@ -234,6 +363,19 @@
                 {/each}
               </p>
             {/if}
+          </div>
+        </div>
+      {/each}
+
+      {#each pendingProposals as proposal (proposal.id)}
+        <div class="message system">
+          <span class="role">tool</span>
+          <div class="bubble">
+            <ProposalCard
+              {proposal}
+              onApply={handleProposalApply}
+              onDiscard={handleProposalDiscard}
+            />
           </div>
         </div>
       {/each}
@@ -260,40 +402,44 @@
       {/if}
     </div>
 
+    {#if !model.loaded}
+      <p class="hint">
+        Model not loaded — slash commands (e.g. <code>/note</code>, <code>/save</code>) still work.
+        <a href="/setup">Load a model</a> to ask about your notes.
+      </p>
+    {/if}
     <div class="input-row">
-      {#if !model.loaded}
-        <p class="hint">Load a model in <a href="/setup">Setup</a> to start chatting.</p>
-      {:else}
-        <textarea
-          rows={3}
-          placeholder="Ask anything about your notes… (Enter to send)"
-          bind:value={input}
-          onkeydown={handleKeydown}
-          disabled={isStreaming}
-          aria-label="Chat input"
-        ></textarea>
-        {#if micAvailable}
-          <button
-            class="mic"
-            class:listening={isListening}
-            onclick={toggleMic}
-            disabled={isStreaming}
-            aria-label={isListening ? 'Stop voice input' : 'Start voice input'}
-            title={isListening ? 'Stop voice input' : 'Start voice input'}
-          >
-            {isListening ? '◼' : '🎙'}
-          </button>
-        {/if}
+      <textarea
+        rows={3}
+        placeholder={model.loaded
+          ? 'Ask anything about your notes… (Enter to send)'
+          : 'Type a slash command, e.g. /note My idea'}
+        bind:value={input}
+        onkeydown={handleKeydown}
+        disabled={isStreaming}
+        aria-label="Chat input"
+      ></textarea>
+      {#if micAvailable}
         <button
-          class="send"
-          onclick={() => {
-            void send();
-          }}
-          disabled={isStreaming || input.trim() === ''}
+          class="mic"
+          class:listening={isListening}
+          onclick={toggleMic}
+          disabled={isStreaming}
+          aria-label={isListening ? 'Stop voice input' : 'Start voice input'}
+          title={isListening ? 'Stop voice input' : 'Start voice input'}
         >
-          {isStreaming ? '…' : 'Send'}
+          {isListening ? '◼' : '🎙'}
         </button>
       {/if}
+      <button
+        class="send"
+        onclick={() => {
+          void send();
+        }}
+        disabled={isStreaming || input.trim() === ''}
+      >
+        {isStreaming ? '…' : 'Send'}
+      </button>
     </div>
   </section>
 </div>
