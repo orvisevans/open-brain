@@ -4,7 +4,7 @@
 
 import type { NotePath } from '$lib/vault/types';
 
-import type { GitAuthor, GitOps, PullResult } from '../types';
+import type { GitAuthor, GitOps, PullResult, PushResult } from '../types';
 
 export interface FakeGitOpsCalls {
   changedPaths: number;
@@ -17,7 +17,7 @@ export interface FakeGitOpsCalls {
 export interface FakeGitOps extends GitOps {
   calls: FakeGitOpsCalls;
   // Override individual methods for failure-mode tests.
-  pushImpl: (token: string) => Promise<void>;
+  pushImpl: (token: string) => Promise<PushResult>;
   pullImpl: (token: string, author: GitAuthor) => Promise<PullResult>;
   stageImpl: (paths: NotePath[]) => Promise<void>;
   commitImpl: (message: string, author: GitAuthor) => Promise<string>;
@@ -38,7 +38,7 @@ export function createFakeGitOps(): FakeGitOps {
   const ops: FakeGitOps = {
     calls,
     currentHead: 'oid-initial',
-    pushImpl: () => Promise.resolve(),
+    pushImpl: () => Promise.resolve({ kind: 'ok' as const }),
     pullImpl: () => Promise.resolve({ kind: 'up-to-date' as const }),
     stageImpl: () => Promise.resolve(),
     commitImpl: () => Promise.resolve('fake-oid'),

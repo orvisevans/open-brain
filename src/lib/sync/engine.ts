@@ -140,17 +140,109 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
       await options.ops.commit(message, options.getAuthor());
 
       setStatus({ kind: 'syncing', phase: 'push' });
-      await options.ops.push(token);
+      const pushResult = await options.ops.push(token);
 
-      logSyncEvent('push', { paths });
-      lastSyncAt = now();
-      recomputeIdle();
+      if (pushResult.kind === 'ok') {
+        logSyncEvent('push', { paths });
+        lastSyncAt = now();
+        recomputeIdle();
+        return;
+      }
+
+      if (pushResult.kind === 'rejected-non-fast-forward') {
+        // A second device pushed while we were composing our commit. Pull
+        // their work, merging it onto our local commit, then re-push. If
+        // the merge cleanly auto-resolves we end up with one merge commit
+        // and the rejection becomes invisible to the user.
+        logSyncEvent('push-rejected-recovering', { paths });
+        const recovered = await recoverFromPushRejection(token);
+        if (!recovered) {
+          // recoverFromPushRejection has already updated the status to
+          // conflict / error; re-queue the paths so a future flush after
+          // resolution picks them up.
+          for (const path of paths) pending.add(path);
+        }
+        return;
+      }
+
+      // Plain push error — re-queue and surface so the user sees it.
+      for (const path of paths) pending.add(path);
+      setStatus({ kind: 'error', message: pushResult.message ?? 'push failed' });
     } catch (error: unknown) {
       logError('sync/flush', { error });
       // Re-queue the paths so a retry picks them up.
       for (const path of paths) pending.add(path);
       setStatus({ kind: 'error', message: error instanceof Error ? error.message : String(error) });
     }
+  }
+
+  // Returns true if recovery succeeded (push went through after a pull).
+  // On conflict / error, sets the appropriate status and returns false so
+  // the caller can re-queue the original paths for a future flush.
+  async function recoverFromPushRejection(token: string): Promise<boolean> {
+    setStatus({ kind: 'syncing', phase: 'pull' });
+    const headBefore = await safeHeadOid();
+    let pullResult;
+    try {
+      pullResult = await options.ops.pull(token, options.getAuthor());
+    } catch (error: unknown) {
+      logError('sync/recover-pull', { error });
+      setStatus({
+        kind: 'error',
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+    const headAfter = await safeHeadOid();
+    const advanced =
+      headBefore !== undefined && headAfter !== undefined && headBefore !== headAfter;
+    logSyncEvent('recover-pull', { kind: pullResult.kind, advanced });
+
+    if (pullResult.kind === 'conflict') {
+      for (const path of pullResult.conflictPaths ?? []) {
+        conflicts.add(path);
+      }
+      setStatus({ kind: 'conflict', paths: [...conflicts] });
+      // Working tree was rewritten with diff3 markers; editor needs to
+      // re-read.
+      emitRemoteChange();
+      return false;
+    }
+    if (pullResult.kind === 'error') {
+      const message =
+        pullResult.message === 'merge-not-supported'
+          ? 'merge-engine failure during push recovery — please re-clone the repo to recover'
+          : (pullResult.message ?? 'pull-after-push-rejection failed');
+      setStatus({ kind: 'error', message });
+      return false;
+    }
+
+    // Clean merge — the local commit now sits on top of (or merged with)
+    // the remote's. Re-push.
+    if (advanced) emitRemoteChange();
+    setStatus({ kind: 'syncing', phase: 'push' });
+    let retryResult;
+    try {
+      retryResult = await options.ops.push(token);
+    } catch (error: unknown) {
+      logError('sync/recover-push', { error });
+      setStatus({
+        kind: 'error',
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+    if (retryResult.kind !== 'ok') {
+      setStatus({
+        kind: 'error',
+        message: retryResult.message ?? 'push after recovery failed',
+      });
+      return false;
+    }
+    logSyncEvent('push-after-recovery', {});
+    lastSyncAt = now();
+    recomputeIdle();
+    return true;
   }
 
   async function pull(): Promise<void> {

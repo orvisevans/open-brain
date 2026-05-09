@@ -32,6 +32,15 @@ export interface PullResult {
   message?: string;
 }
 
+// Outcome of a push. The 'rejected-non-fast-forward' kind is reported when
+// the remote has commits we don't, so the push isn't a fast-forward. The
+// engine treats this as an opportunity to auto-recover: pull, then re-push,
+// which folds remote commits into ours via a merge commit.
+export interface PushResult {
+  kind: 'ok' | 'rejected-non-fast-forward' | 'error';
+  message?: string;
+}
+
 // The contract SyncEngine talks to. `git.ts` ships the production
 // implementation; tests pass a fake. Keeping the interface narrow keeps the
 // engine unit-testable without dragging in isomorphic-git's surface area.
@@ -73,8 +82,10 @@ export interface GitOps {
   // Commit the staged paths with the supplied author + message. Returns the
   // commit oid for logging/debugging.
   commit(message: string, author: GitAuthor): Promise<string>;
-  // Push the current branch to origin. Surfaces transport errors directly.
-  push(token: string): Promise<void>;
+  // Push the current branch to origin. Returns a structured result so the
+  // engine can distinguish a transient transport error from a non-fast-
+  // forward rejection (which it auto-recovers from by pulling first).
+  push(token: string): Promise<PushResult>;
   // Fetch + merge from origin into the current branch. Returns a structured
   // result so the engine can dispatch to the conflict tiers.
   pull(token: string, author: GitAuthor): Promise<PullResult>;

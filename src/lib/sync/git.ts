@@ -26,7 +26,7 @@ import http from 'isomorphic-git/http/web';
 
 import type { NotePath } from '$lib/vault/types';
 
-import type { GitAuthor, GitOps, PullResult } from './types';
+import type { GitAuthor, GitOps, PullResult, PushResult } from './types';
 
 // Shared filesystem instance — one IndexedDB-backed FS for the whole app.
 export const fs = new LightningFS('openbrain-fs');
@@ -142,13 +142,26 @@ async function commit(message: string, author: GitAuthor): Promise<string> {
   });
 }
 
-async function push(token: string): Promise<void> {
+async function push(token: string): Promise<PushResult> {
   const branch = await getCurrentBranch();
-  await gitPush({
-    ...gitDefaults(token),
-    ref: branch,
-    remoteRef: branch,
-  });
+  try {
+    await gitPush({
+      ...gitDefaults(token),
+      ref: branch,
+      remoteRef: branch,
+    });
+    return { kind: 'ok' };
+  } catch (error: unknown) {
+    if (error instanceof Errors.PushRejectedError) {
+      // Remote moved on while we were composing our commit. The engine
+      // recovers by pulling the divergent commits and re-pushing the merge.
+      return { kind: 'rejected-non-fast-forward' };
+    }
+    return {
+      kind: 'error',
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 async function pull(token: string, author: GitAuthor): Promise<PullResult> {

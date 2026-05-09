@@ -82,10 +82,12 @@ function createHarness(
 }
 
 async function flush(): Promise<void> {
-  // Allow queued microtasks (the runFlush async fn) to settle.
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  // Allow queued microtasks (the runFlush async fn) to settle. The push-
+  // rejection recovery path stacks pull + retry-push so a few cycles
+  // aren't enough; 16 yields is plenty for any chain we currently have.
+  for (let index = 0; index < 16; index += 1) {
+    await Promise.resolve();
+  }
 }
 
 describe('SyncEngine', () => {
@@ -211,10 +213,54 @@ describe('SyncEngine', () => {
       expect(engine.status.value.kind).toBe('error');
 
       // Recover: subsequent flush after the impl is fixed picks up the path again.
-      ops.pushImpl = () => Promise.resolve();
+      ops.pushImpl = () => Promise.resolve({ kind: 'ok' as const });
       await engine.flush();
 
       expect(ops.calls.push.filter((t) => t === 'fake-token')).toHaveLength(2);
+    });
+
+    it('auto-recovers from a non-fast-forward push by pulling and re-pushing', async () => {
+      const { engine, ops, clock } = createHarness();
+
+      // First push: rejected. After the rejection, pullImpl simulates a
+      // clean merge that advances HEAD. Then the engine re-pushes; we
+      // flip pushImpl to ok at that point.
+      let pushCount = 0;
+      ops.pushImpl = () => {
+        pushCount += 1;
+        if (pushCount === 1) {
+          return Promise.resolve({ kind: 'rejected-non-fast-forward' as const });
+        }
+        return Promise.resolve({ kind: 'ok' as const });
+      };
+      ops.pullImpl = () => {
+        ops.currentHead = 'oid-after-pull';
+        return Promise.resolve({ kind: 'merged' as const });
+      };
+
+      engine.notifyChange('notes/a.md');
+      clock.advance(5000);
+      await flush();
+
+      expect(ops.calls.push).toHaveLength(2);
+      expect(ops.calls.pull).toHaveLength(1);
+      expect(engine.status.value.kind).toBe('idle');
+    });
+
+    it('surfaces conflict (not error) when push-rejection recovery hits overlapping changes', async () => {
+      const { engine, ops, clock } = createHarness();
+      ops.pushImpl = () => Promise.resolve({ kind: 'rejected-non-fast-forward' as const });
+      ops.pullImpl = () =>
+        Promise.resolve({ kind: 'conflict' as const, conflictPaths: ['notes/a.md'] });
+
+      engine.notifyChange('notes/a.md');
+      clock.advance(5000);
+      await flush();
+
+      // Only one push attempt — we don't retry while the user has to
+      // resolve a conflict.
+      expect(ops.calls.push).toHaveLength(1);
+      expect(engine.status.value.kind).toBe('conflict');
     });
   });
 
