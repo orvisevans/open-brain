@@ -10,6 +10,16 @@
     type ChatMessage,
     type ChatSession,
   } from '$lib/chat';
+  import CommandBar from '$lib/chat/command-bar/CommandBar.svelte';
+  import {
+    COMMAND_LIST,
+    loadCommandStats,
+    recordUse,
+    saveCommandStats,
+    type CommandStats,
+  } from '$lib/chat/command-bar';
+  import { searchMentions, type MentionMatch } from '$lib/chat/mention';
+  import MentionPopover from '$lib/chat/mention/MentionPopover.svelte';
   import { applyProposal, type Proposal } from '$lib/chat/proposal';
   import ProposalCard from '$lib/chat/proposal/ProposalCard.svelte';
   import {
@@ -41,6 +51,19 @@
   // session — the file (or the absence of one after Discard) is the artifact.
   let pendingProposals = $state<Proposal[]>([]);
 
+  // Phase 5.5: command-bar state. Stats persist to .openbrain/command-stats.json
+  // (see saveCommandStats); we debounce writes by 5s so a quick rapid-fire of
+  // chips doesn't churn the sync queue.
+  let commandStats = $state<CommandStats>({});
+  let pendingStatsSave: ReturnType<typeof setTimeout> | undefined;
+  // Phase 5.5: mention popover state. Caret-tracked; index rebuilt on vault
+  // change events so newly-saved notes show up immediately.
+  let textareaElement = $state<HTMLTextAreaElement | undefined>(undefined);
+  let mentionPaths = $state<string[]>([]);
+  let mentionStart = $state<number | undefined>(undefined);
+  let mentionMatches = $state<MentionMatch[]>([]);
+  let mentionSelectedIndex = $state(0);
+
   // Hydrate the most recent session on mount; create a fresh one if none.
   $effect(() => {
     void (async () => {
@@ -51,6 +74,23 @@
       } catch (error: unknown) {
         logError('chat/hydrate', { error });
         session = await createSession();
+      }
+    })();
+  });
+
+  // Load Phase 5.5 metadata once on mount: command stats (frecency) +
+  // the mention index (paths only — title/aliases are a v2 enhancement).
+  $effect(() => {
+    void (async () => {
+      try {
+        commandStats = await loadCommandStats(chatVault);
+      } catch (error: unknown) {
+        logError('chat/load-command-stats', { error });
+      }
+      try {
+        mentionPaths = await vault.listNotes();
+      } catch (error: unknown) {
+        logError('chat/load-mention-paths', { error });
       }
     })();
   });
@@ -173,6 +213,9 @@
     parsed: ParsedCommand,
     current: ChatSession,
   ): Promise<void> {
+    if (parsed.kind !== 'unknown') {
+      recordCommandUse(`/${parsed.kind}`);
+    }
     const userMessage: ChatMessage = {
       id: cryptoRandomId(),
       role: 'user',
@@ -259,10 +302,123 @@
   }
 
   function handleKeydown(event: KeyboardEvent): void {
+    // Mention popover navigation takes precedence over Enter-to-send.
+    if (mentionMatches.length > 0) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        mentionSelectedIndex = (mentionSelectedIndex + 1) % mentionMatches.length;
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        mentionSelectedIndex =
+          (mentionSelectedIndex - 1 + mentionMatches.length) % mentionMatches.length;
+        return;
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault();
+        const match = mentionMatches[mentionSelectedIndex];
+        if (match !== undefined) pickMention(match.path);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeMentionPopover();
+        return;
+      }
+    }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       void send();
     }
+  }
+
+  // ── Command bar ─────────────────────────────────────────────────────────
+
+  function pickChip(command: string): void {
+    input = `${command} `;
+    recordCommandUse(command);
+    const element = textareaElement;
+    setTimeout(() => {
+      element?.focus();
+      element?.setSelectionRange(input.length, input.length);
+    }, 0);
+  }
+
+  function recordCommandUse(command: string): void {
+    commandStats = recordUse(commandStats, command, Date.now());
+    if (pendingStatsSave !== undefined) clearTimeout(pendingStatsSave);
+    pendingStatsSave = setTimeout(() => {
+      void saveCommandStats(chatVault, commandStats).catch((error: unknown) => {
+        logError('chat/save-command-stats', { error });
+      });
+      pendingStatsSave = undefined;
+    }, 5000);
+  }
+
+  // ── Mention popover ─────────────────────────────────────────────────────
+
+  function handleInput(): void {
+    updateMentionState();
+  }
+
+  function updateMentionState(): void {
+    if (textareaElement === undefined) {
+      closeMentionPopover();
+      return;
+    }
+    const cursor = textareaElement.selectionStart;
+    const found = findActiveMention(input, cursor);
+    if (found === undefined) {
+      closeMentionPopover();
+      return;
+    }
+    mentionStart = found.start;
+    mentionMatches = searchMentions(mentionPaths, found.query);
+    mentionSelectedIndex = 0;
+  }
+
+  function pickMention(path: string): void {
+    if (mentionStart === undefined || textareaElement === undefined) return;
+    const element = textareaElement;
+    const cursor = element.selectionStart;
+    const before = input.slice(0, mentionStart);
+    const after = input.slice(cursor);
+    const insertion = `@${path} `;
+    input = `${before}${insertion}${after}`;
+    closeMentionPopover();
+    setTimeout(() => {
+      element.focus();
+      const newCursor = before.length + insertion.length;
+      element.setSelectionRange(newCursor, newCursor);
+    }, 0);
+  }
+
+  function closeMentionPopover(): void {
+    mentionStart = undefined;
+    mentionMatches = [];
+    mentionSelectedIndex = 0;
+  }
+
+  function findActiveMention(
+    text: string,
+    cursor: number,
+  ): { start: number; query: string } | undefined {
+    let index = cursor;
+    while (index > 0) {
+      const char = text[index - 1];
+      if (char === '@') {
+        // Anchored to start-of-string or whitespace before the @.
+        const previous = index >= 2 ? text[index - 2] : undefined;
+        if (previous === undefined || /\s/.test(previous)) {
+          return { start: index - 1, query: text.slice(index, cursor) };
+        }
+        return undefined;
+      }
+      if (char === undefined || /\s/.test(char)) return undefined;
+      index--;
+    }
+    return undefined;
   }
 
   function cryptoRandomId(): string {
@@ -408,38 +564,54 @@
         <a href="/setup">Load a model</a> to ask about your notes.
       </p>
     {/if}
-    <div class="input-row">
-      <textarea
-        rows={3}
-        placeholder={model.loaded
-          ? 'Ask anything about your notes… (Enter to send)'
-          : 'Type a slash command, e.g. /note My idea'}
-        bind:value={input}
-        onkeydown={handleKeydown}
-        disabled={isStreaming}
-        aria-label="Chat input"
-      ></textarea>
-      {#if micAvailable}
-        <button
-          class="mic"
-          class:listening={isListening}
-          onclick={toggleMic}
-          disabled={isStreaming}
-          aria-label={isListening ? 'Stop voice input' : 'Start voice input'}
-          title={isListening ? 'Stop voice input' : 'Start voice input'}
-        >
-          {isListening ? '◼' : '🎙'}
-        </button>
+    <div class="composer">
+      {#if mentionMatches.length > 0}
+        <div class="popover-anchor">
+          <MentionPopover
+            matches={mentionMatches}
+            selectedIndex={mentionSelectedIndex}
+            onPick={pickMention}
+          />
+        </div>
       {/if}
-      <button
-        class="send"
-        onclick={() => {
-          void send();
-        }}
-        disabled={isStreaming || input.trim() === ''}
-      >
-        {isStreaming ? '…' : 'Send'}
-      </button>
+      <CommandBar commands={COMMAND_LIST} stats={commandStats} onPick={pickChip} />
+      <div class="input-row">
+        <textarea
+          rows={3}
+          placeholder={model.loaded
+            ? 'Ask anything about your notes… (Enter to send)'
+            : 'Type a slash command, e.g. /note My idea'}
+          bind:value={input}
+          bind:this={textareaElement}
+          onkeydown={handleKeydown}
+          oninput={handleInput}
+          onclick={updateMentionState}
+          onkeyup={updateMentionState}
+          disabled={isStreaming}
+          aria-label="Chat input"
+        ></textarea>
+        {#if micAvailable}
+          <button
+            class="mic"
+            class:listening={isListening}
+            onclick={toggleMic}
+            disabled={isStreaming}
+            aria-label={isListening ? 'Stop voice input' : 'Start voice input'}
+            title={isListening ? 'Stop voice input' : 'Start voice input'}
+          >
+            {isListening ? '◼' : '🎙'}
+          </button>
+        {/if}
+        <button
+          class="send"
+          onclick={() => {
+            void send();
+          }}
+          disabled={isStreaming || input.trim() === ''}
+        >
+          {isStreaming ? '…' : 'Send'}
+        </button>
+      </div>
     </div>
   </section>
 </div>
@@ -592,6 +764,22 @@
     50% {
       opacity: 0;
     }
+  }
+
+  .composer {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    position: relative;
+  }
+
+  .popover-anchor {
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    right: 0;
+    z-index: 5;
+    margin-bottom: 0.25rem;
   }
 
   .input-row {

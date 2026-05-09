@@ -164,9 +164,11 @@ export function teardownMemoryForTest(): void {
 export function notifyMemoryOfChange(path: string): void {
   // Sidecars (.memory/...) are written by the queues themselves — re-enqueueing
   // would loop. Chat sessions (.chats/...) sync via the same vault → sync
-  // pipeline, but we don't want to embed them either.
+  // pipeline, but we don't want to embed them either. Same for app-state
+  // metadata under .openbrain/ (Phase 5.5 command-stats and friends).
   if (isSidecarPath(path)) return;
   if (path.startsWith('.chats/')) return;
+  if (path.startsWith('.openbrain/')) return;
   embeddingQueue.enqueue(path);
   extractionQueue.enqueue(path);
 }
