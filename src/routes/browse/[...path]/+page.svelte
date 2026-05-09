@@ -111,25 +111,53 @@
 
   // When the SyncEngine pulls in a HEAD-advancing change from the remote,
   // re-read the active note from disk so the editor reflects merged content.
-  // We skip the reload if there's a pending unsaved edit — reading would
-  // clobber the user's in-flight changes; they'll see the merged version
-  // after their save reaches the next pull cycle (which may itself become
-  // a conflict if their edit overlaps).
+  // We skip the reload if there's a pending unsaved edit AND we're not in
+  // conflict — reading would clobber in-flight typing. In a conflict the
+  // user's in-flight edit is what caused the conflict, so we re-read
+  // anyway so they can see the markers.
   $effect(() => {
     return syncEngine.onRemoteChange(() => {
       const current = path;
       if (current === undefined) return;
-      if (pendingSave !== undefined) return;
-      void (async () => {
-        try {
-          const next = await vault.readRaw(current);
-          if (next !== content) content = next;
-        } catch (error: unknown) {
-          logError('browse-detail/remote-change-read', { path: current, error });
-        }
-      })();
+      const inConflict = syncEngine.status.value.kind === 'conflict';
+      if (!inConflict && pendingSave !== undefined) return;
+      void reloadFromDisk(current, 'remote-change');
     });
   });
+
+  // Backstop: if the engine flips to `conflict` status and the active
+  // path is in the conflict list, re-read regardless. Covers the case
+  // where the remote-change emit got missed (e.g. timing race) or the
+  // conflict was discovered via a path other than the standard pull.
+  $effect(() => {
+    return syncEngine.subscribe((status) => {
+      if (status.kind !== 'conflict') return;
+      const current = path;
+      if (current === undefined) return;
+      if (!status.paths.includes(current)) return;
+      void reloadFromDisk(current, 'conflict-status');
+    });
+  });
+
+  async function reloadFromDisk(forPath: NotePath, reason: string): Promise<void> {
+    try {
+      const next = await vault.readRaw(forPath);
+      const hasMarkers = /^<{7}/m.test(next);
+      // Diagnostic: makes it observable in DevTools whether markers
+      // actually landed on disk. If `hasMarkers: false` shows up here
+      // when the engine reports conflict, the issue is in the merge
+      // step, not in the editor refresh.
+      console.warn('[open-brain/browse-detail/reload]', {
+        path: forPath,
+        reason,
+        bytes: next.length,
+        hasMarkers,
+      });
+      if (next !== content) content = next;
+    } catch (error: unknown) {
+      logError('browse-detail/reload-from-disk', { path: forPath, reason, error });
+    }
+  }
 
   function handleChange(next: string): void {
     const current = path;
@@ -181,6 +209,19 @@
         save failed
       {/if}
     </span>
+    <button
+      type="button"
+      class="reload-button"
+      title="Re-read this note from disk (use after a sync to see the merged content)"
+      onclick={() => {
+        const current = path;
+        if (current === undefined) return;
+        void reloadFromDisk(current, 'manual');
+      }}
+      disabled={path === undefined}
+    >
+      reload
+    </button>
   </header>
 
   {#if conflictCount > 0}
@@ -233,6 +274,27 @@
   .status {
     font-size: 0.7rem;
     opacity: 0.55;
+  }
+
+  .reload-button {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    background: transparent;
+    border: 1px solid var(--color-border);
+    color: var(--color-fg);
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    cursor: pointer;
+    opacity: 0.7;
+  }
+
+  .reload-button:hover {
+    opacity: 1;
+  }
+
+  .reload-button:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
   }
 
   .status.saved {
