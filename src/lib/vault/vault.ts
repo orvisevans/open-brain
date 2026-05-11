@@ -25,12 +25,17 @@ export interface Vault {
   // notes-only callers (Browse note tree, retrieval over `notes/`) are
   // unaffected and so callers express intent explicitly. Phase 5.7.
   listChats(): Promise<NotePath[]>;
+  // Lists app-settings markdown files under `.openbrain/` (persona, future
+  // config). Phase 5.9. Excludes the `command-stats.json` and
+  // `last-review-at` non-markdown bookkeeping files — only `.md`.
+  listAppSettings(): Promise<NotePath[]>;
 }
 
 export interface VaultOptions {
   repoDirectory?: string;
   notesDirectory?: string;
   chatsDirectory?: string;
+  appSettingsDirectory?: string;
   // Notified after a successful `writeNote`. The SyncEngine subscribes via
   // this hook in production; tests omit it. Errors during the callback are
   // logged but do not propagate — sync notification is best-effort.
@@ -40,11 +45,13 @@ export interface VaultOptions {
 const DEFAULT_REPO_DIRECTORY = '/repo';
 const DEFAULT_NOTES_DIRECTORY = 'notes';
 const DEFAULT_CHATS_DIRECTORY = '.chats';
+const DEFAULT_APP_SETTINGS_DIRECTORY = '.openbrain';
 
 export function createVault(fs: FsLike, options: VaultOptions = {}): Vault {
   const repoDirectory = options.repoDirectory ?? DEFAULT_REPO_DIRECTORY;
   const notesDirectory = options.notesDirectory ?? DEFAULT_NOTES_DIRECTORY;
   const chatsDirectory = options.chatsDirectory ?? DEFAULT_CHATS_DIRECTORY;
+  const appSettingsDirectory = options.appSettingsDirectory ?? DEFAULT_APP_SETTINGS_DIRECTORY;
 
   function toAbsolute(path: NotePath): string {
     return joinPosix(repoDirectory, path);
@@ -127,7 +134,23 @@ export function createVault(fs: FsLike, options: VaultOptions = {}): Vault {
       .sort((a, b) => a.localeCompare(b));
   }
 
-  return { readNote, readRaw, writeNote, listNotes, listChats };
+  async function listAppSettings(): Promise<NotePath[]> {
+    const root = joinPosix(repoDirectory, appSettingsDirectory);
+    const out: NotePath[] = [];
+    try {
+      await walk(fs, root, out);
+    } catch (error: unknown) {
+      if (isNotFound(error)) return [];
+      logError('vault/list-app-settings', { error });
+      throw error;
+    }
+    return out
+      .filter((path) => path.endsWith('.md'))
+      .map((absolute) => relativeFrom(repoDirectory, absolute))
+      .sort((a, b) => a.localeCompare(b));
+  }
+
+  return { readNote, readRaw, writeNote, listNotes, listChats, listAppSettings };
 }
 
 async function walk(fs: FsLike, current: string, out: string[]): Promise<void> {

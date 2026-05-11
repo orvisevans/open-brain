@@ -56,11 +56,20 @@
     speak,
   } from '$lib/chat/tts';
   import { logError } from '$lib/log';
+  import { CAPABILITIES_PROMPT } from '$lib/llm/capabilities';
   import { streamChat } from '$lib/llm/runtime';
+  import { buildSystemPrompt } from '$lib/llm/system-prompt';
   import { assembleContext, retrieve } from '$lib/memory';
+  import {
+    ensurePersonaStub,
+    loadPersona,
+    PERSONA_PATH,
+    renderPersonaForPrompt,
+    type Persona,
+  } from '$lib/persona';
   import { model } from '$lib/state.svelte';
   import { createWebSpeechTranscriber } from '$lib/transcribe';
-  import { vault } from '$lib/vault';
+  import { subscribeToVaultChanges, vault } from '$lib/vault';
   import type { NotePath } from '$lib/vault/types';
 
   registerCoreHandlers();
@@ -145,6 +154,39 @@
   // banner switches from "yesterday's journal" copy to "N captures across
   // M sources" — and the Organize button targets the first source path.
   let reviewFreshSummary = $state<{ count: number; sources: NotePath[] } | undefined>(undefined);
+
+  // Phase 5.9: persona loaded on mount and refreshed whenever the file
+  // changes in the vault. Stored as a plain `let` (not `$state`) because
+  // the chat-send path reads it inside an async closure — Svelte 5's
+  // reactivity would needlessly re-trigger any effect that captured it.
+  // The chat-send call site reads the latest value at call time.
+  let persona: Persona | undefined;
+  const personaReadVault = { readRaw: (path: NotePath) => vault.readRaw(path) };
+  const personaWriteVault = {
+    writeNote: (path: NotePath, content: string) => vault.writeNote(path, content),
+  };
+  async function refreshPersona(): Promise<void> {
+    try {
+      persona = await loadPersona(personaReadVault);
+    } catch (error: unknown) {
+      logError('chat/persona-refresh', { error });
+    }
+  }
+  $effect(() => {
+    void (async () => {
+      try {
+        await ensurePersonaStub(personaReadVault, personaWriteVault);
+      } catch (error: unknown) {
+        logError('chat/persona-stub', { error });
+      }
+      await refreshPersona();
+    })();
+    // Re-read whenever .openbrain/persona.md is written from anywhere.
+    return subscribeToVaultChanges((path) => {
+      if (path !== PERSONA_PATH) return;
+      void refreshPersona();
+    });
+  });
 
   // Hydrate the most recent session on mount; create a fresh one if none.
   $effect(() => {
@@ -297,9 +339,16 @@
       streamingCitations = retrieval.noteRefs;
       phase = 'thinking';
 
-      const systemPrompt = llmEmitEnabled
-        ? `${assembled.systemPrompt}\n\n${SLASH_EMIT_SYSTEM_INSTRUCTION}`
-        : assembled.systemPrompt;
+      // Phase 5.9: assemble system prompt via the builder so capabilities
+      // and persona land in a stable byte-prefix order (KV cache friendly).
+      const renderedPersona = renderPersonaForPrompt(persona);
+      const built = buildSystemPrompt({
+        capabilities: CAPABILITIES_PROMPT,
+        ...(renderedPersona !== undefined && { persona: renderedPersona }),
+        retrievalGuardrails: assembled.systemPrompt,
+        ...(llmEmitEnabled && { slashEmit: SLASH_EMIT_SYSTEM_INSTRUCTION }),
+      });
+      const systemPrompt = built.prompt;
       const llmMessages: ChatCompletionMessageParam[] = [
         { role: 'system', content: systemPrompt },
         // Replay prior turns. Skip system messages — they are slash-command

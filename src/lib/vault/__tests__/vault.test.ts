@@ -101,6 +101,19 @@ describe('Vault', () => {
     });
   });
 
+  describe('listAppSettings', () => {
+    it('returns empty array when .openbrain/ is missing', async () => {
+      expect(await vault.listAppSettings()).toEqual([]);
+    });
+
+    it('returns .md files only (skips JSON bookkeeping)', async () => {
+      await vault.writeNote('.openbrain/persona.md', '---\n---\n');
+      fs.seedFile('/repo/.openbrain/command-stats.json', '{}');
+      fs.seedFile('/repo/.openbrain/last-review-at', '2026-05-11');
+      expect(await vault.listAppSettings()).toEqual(['.openbrain/persona.md']);
+    });
+  });
+
   describe('with custom repoDirectory', () => {
     it('honours the repoDirectory option', async () => {
       const custom = createVault(fs, { repoDirectory: '/elsewhere' });

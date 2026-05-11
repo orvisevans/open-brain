@@ -23,6 +23,10 @@
   // structure but still live one click away in the same sidebar.
   let chats = $state<NotePath[]>([]);
   let chatTree = $state<TreeNode[]>([]);
+  // Phase 5.9: user-editable app-settings markdown (persona, future
+  // config). Same FileTree shape, separate section.
+  let appSettings = $state<NotePath[]>([]);
+  let appSettingsTree = $state<TreeNode[]>([]);
   let loading = $state(true);
   let listError = $state<string | undefined>(undefined);
 
@@ -35,13 +39,19 @@
 
   async function refreshNotes(): Promise<void> {
     try {
-      const [list, chatList] = await Promise.all([vault.listNotes(), vault.listChats()]);
+      const [list, chatList, appList] = await Promise.all([
+        vault.listNotes(),
+        vault.listChats(),
+        vault.listAppSettings(),
+      ]);
       notes = list;
       tree = buildTree(list);
       // Reverse-chronological: latest sessions on top. The file names are
       // ISO-shaped, so a string sort works.
       chats = [...chatList].sort((a, b) => b.localeCompare(a));
       chatTree = buildTree(chats);
+      appSettings = appList;
+      appSettingsTree = buildTree(appList);
       listError = undefined;
     } catch (error: unknown) {
       logError('browse/list', { error });
@@ -209,7 +219,7 @@
         <p class="empty">Loading…</p>
       {:else if listError !== undefined}
         <p class="error">{listError}</p>
-      {:else if notes.length === 0 && chats.length === 0}
+      {:else if notes.length === 0 && chats.length === 0 && appSettings.length === 0}
         <p class="empty">
           No notes yet. <a href="/setup">Clone a repo →</a>
         </p>
@@ -223,6 +233,13 @@
             <span class="count">{chats.length}</span>
           </div>
           <FileTree nodes={chatTree} {activePath} />
+        {/if}
+        {#if appSettings.length > 0}
+          <div class="section-divider">
+            <h2>App settings</h2>
+            <span class="count">{appSettings.length}</span>
+          </div>
+          <FileTree nodes={appSettingsTree} {activePath} />
         {/if}
       {/if}
     </div>
