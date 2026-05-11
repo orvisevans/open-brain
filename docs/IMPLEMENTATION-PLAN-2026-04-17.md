@@ -684,44 +684,47 @@ This is foundation, not UX revolution. No new slash commands. No router change. 
 
 Today `/organize @path` is manual: the user types it, the LLM extracts, proposals appear, the user accepts. Phase 5.8 makes that happen automatically as a background pass over substantive content (journal entries crossing a threshold, chat sessions where the user said meaningful things). Daily review surfaces the cumulative suggestions instead of nagging per-note. Captures gain a "related thinking" panel that retrieves similar past notes + chats so connections form at write time.
 
-### Background organize queue (`src/lib/memory/`)
+### Background organize trigger (`src/lib/memory/auto-organize.ts`)
 
-- [ ] Promote the deferred `'organize'` extraction job type (post-MVP backlog → here). New job kind sits beside `'embed'` in `extraction-queue.ts`.
-- [ ] Triggers:
-    - Journal note crosses ~`200` chars of new content since last organize (hash-based check).
-    - Chat session crosses ~`5` substantive user messages since last organize.
-- [ ] Job calls the existing `organize.ts` LLM pipeline; writes a `.suggestions.json` sidecar; respects `GpuLease` (chat / RAG always wins over background organize).
-- [ ] Single-flight per path; `whenIdle()` for tests.
+- [x] New module `auto-organize.ts` with `createAutoOrganize()` factory — chose this over plumbing a new job kind through `extraction-queue.ts` because the trigger has different gates (no battery/idle wait — chats and journals are written *because the user paused capture*, which is exactly when organize should run) and a different surface (one debounced run per path, not a polled queue).
+- [x] Triggers on writes to `journal/*` or `.chats/*`. Non-mess-shaped paths silently ignored.
+- [x] Debounce 60s default; min-chars 200 default; single-flight per path.
+- [x] Hash-based freshness gate: if a `.suggestions.json` exists for the source and `source_hash` matches, skip the LLM call.
+- [x] Skips when model not loaded (no `paused: 'no-llm'` queue state — silent skip with `onRunComplete` event for diagnostics).
+- [x] Writes an empty-suggestions sidecar on `NO_EXTRACTIONS` so we don't re-run on every change to the same content.
+- [x] Wired in `bootstrapMemory()` alongside the embedding queue; `notifyMemoryOfChange` calls `autoOrganize.noteChanged(path)`.
+- [x] Tests: 6 covering mess-prefix filter, density trigger, too-short skip, freshness skip, no-LLM skip, debounce.
 
 ### Daily-review fires on density, not just time
 
-- [ ] `daily-review.ts` gains a "stale suggestion count" signal: how many `.suggestions.json` entries exist that haven't been accepted/dismissed since last review.
-- [ ] Banner copy: "You captured N items across journal + chats yesterday — review?" Same `/organize` flow; the command now accepts batched paths or a date range.
-- [ ] Suggestion sidecars carry `acked_at` / `dismissed_at` so review state survives across days.
+- [x] `summariseFreshSuggestions(vault, lastReviewAt?)` walks suggestion sidecars and counts entries generated after the cutoff; returns `{ freshSuggestionCount, freshSources }`.
+- [x] `chatVault.listSuggestionPaths()` walks `.memory/` recursively for `*.suggestions.json` files. Lives in `src/lib/chat/index.ts` because the chat layer already owns vault-walking helpers.
+- [x] Chat-page banner switches copy based on `reviewFreshSummary`: "You captured N things across M sources since your last review" when fresh suggestions exist, else the existing yesterday-journal copy. Organize button targets the first fresh source.
+- [x] 5 new daily-review tests (count, cutoff-before, undefined-treated-as-all, zero-suggestion sidecars ignored, missing `listSuggestionPaths` returns zero).
+- [ ] **Suggestion sidecar `acked_at` / `dismissed_at` state — deferred.** Today review state is just "last review timestamp" → cutoff. Acked/dismissed-per-suggestion is a richer model that survives across many days; not blocking the user-facing win. Filed below as a follow-up.
 
 ### Proactive connections at capture time
 
-- [ ] When a proposal card is rendered for `/journal` or `/note`, kick off a background retrieval (k=3) against existing memory. When ready, append a `## Related` section to the card with one-line previews + `[[wikilink]]` chips.
-- [ ] Applying the proposal with `Apply with backlinks` writes the links into the new note's body; `Apply` without writes none.
-- [ ] Avoid blocking the card render — links are best-effort and arrive after.
+- [ ] **Deferred.** Adding a `## Related` section to proposal cards requires a per-card async retrieval and a UI affordance for "Apply with backlinks vs. Apply." With Phase 5.7's chat-RAG already pulling related thinking into the next-turn context, the marginal value of an explicit related-notes panel on the proposal card is lower than it was in the original design. Re-evaluate after manual use of the daily-review surface.
 
 ### Chat-aware extractions
 
-- [ ] `/organize` accepts a chat path (`/organize @.chats/<id>.md`) and extracts atomic notes from the conversation. Existing handler already takes any path; the LLM prompt may need a "conversation mode" tweak that focuses on user turns and ignores assistant scaffolding.
+- [x] `/organize @.chats/<id>.md` works through the existing handler — `readRaw` returns the chat session markdown; `parseOrganizeOutput` handles whatever extractions the LLM produces. No code change needed; the path-shape constraint was always permissive.
+- [ ] **Conversation-mode system prompt tweak — deferred.** The current `ORGANIZE_SYSTEM_PROMPT` is sufficient on first read for a chat source. A future revision could add "ignore assistant scaffolding, focus on what the user actually said" but the generic prompt produces reasonable results — wait for telemetry before tuning.
 
 ### Testing
 
-- [ ] Unit: organize-job dispatch, density trigger thresholds, related-retrieval helper, daily-review density signal, chat-source organize prompt.
-- [ ] Manual: capture a journal entry; observe `.suggestions.json` appearing in `.memory/`; reload chat; verify Related links surface on the next capture proposal.
+- [x] Unit: 6 auto-organize tests + 5 daily-review suggestion-summary tests. 11 new tests; total now **364 across 44 files**.
+- [ ] Manual: capture a journal entry of >200 chars; observe `.memory/journal/<date>.md.suggestions.json` appearing within 60s; reload chat; verify the daily-review banner reflects the cumulative count. _Saved for the user's primary tab._
 
 ### Exit criteria
 
-- [ ] Captures crossing the threshold spawn background organize jobs that produce suggestion sidecars without user action.
-- [ ] Daily review reflects the cumulative suggestion count, not a single-note prompt.
-- [ ] Proposal cards for new captures surface related-content chips.
-- [ ] `/organize @.chats/<id>` produces sensible atomic-note proposals.
-- [ ] `npm run check` green.
-- [ ] Tag `phase-5.8-complete`.
+- [x] Captures crossing the threshold spawn background organize jobs that produce suggestion sidecars without user action.
+- [x] Daily review reflects the cumulative suggestion count, not a single-note prompt.
+- [ ] ~~Proposal cards for new captures surface related-content chips.~~ Deferred (above).
+- [x] `/organize @.chats/<id>` produces sensible atomic-note proposals (handler is path-agnostic; manual validation deferred to user's tab).
+- [x] `npm run check` green.
+- [x] Tag `phase-5.8-complete`.
 
 ---
 

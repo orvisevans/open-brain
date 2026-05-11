@@ -10,6 +10,12 @@ import { logError } from '$lib/log';
 import { syncEngine } from '$lib/sync';
 import { subscribeToVaultChanges, vault } from '$lib/vault';
 
+import {
+  createAutoOrganize,
+  type AutoOrganizeRunner,
+  type AutoOrganizeTrigger,
+  type AutoOrganizeVault,
+} from './auto-organize';
 import { createEmbeddingQueue, type EmbeddingQueue, type EmbeddingVault } from './embedding-queue';
 import {
   createExtractionQueue,
@@ -118,6 +124,24 @@ export const extractionQueue: ExtractionQueue = createExtractionQueue({
   llm: llmAdapter,
 });
 
+// Phase 5.8: auto-organize trigger watches journal + chat writes and silently
+// runs the LLM organize pipeline once enough content has accumulated. The
+// suggestions land in `.memory/<path>.suggestions.json` and feed the daily
+// review banner. Uses the same LLM adapter the extraction queue uses (so
+// `modelLoaded` reflects WebLLM's actual state).
+const autoOrganizeVault: AutoOrganizeVault = {
+  readRaw: (path) => vault.readRaw(path),
+  writeNote: (path, content) => vault.writeNote(path, content),
+};
+const autoOrganizeRunner: AutoOrganizeRunner = {
+  modelLoaded: () => getEngine() !== undefined,
+  complete: (systemPrompt, userPrompt) => llmAdapter.complete(systemPrompt, userPrompt),
+};
+export const autoOrganize: AutoOrganizeTrigger = createAutoOrganize({
+  vault: autoOrganizeVault,
+  llm: autoOrganizeRunner,
+});
+
 export const sidecarConflictResolver = createSidecarConflictResolver({
   syncEngine,
   vault: productionVault,
@@ -159,6 +183,7 @@ export function teardownMemoryForTest(): void {
   unsubscribeFromVault = undefined;
   extractionQueue.stop();
   sidecarConflictResolver.stop();
+  autoOrganize.stop();
 }
 
 export function notifyMemoryOfChange(path: string): void {
@@ -170,12 +195,15 @@ export function notifyMemoryOfChange(path: string): void {
   // Chat sessions (Phase 5.7) flow through the embedding queue so retrieval
   // can find them, but skip the LLM extraction pass — chats are
   // conversational rather than note-shaped, and the summary/entities fields
-  // don't carry their value the same way. Auto-organize over chats lands in
-  // Phase 5.8 via the dedicated `'organize'` job kind.
+  // don't carry their value the same way.
   embeddingQueue.enqueue(path);
   if (!path.startsWith('.chats/')) {
     extractionQueue.enqueue(path);
   }
+  // Phase 5.8: auto-organize fires for journal + chat paths only. The
+  // module itself enforces this prefix list; passing all paths here is fine
+  // — non-mess paths are silently ignored.
+  autoOrganize.noteChanged(path);
 }
 
 export function getSidecarPath(notePath: string): string {

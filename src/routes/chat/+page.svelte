@@ -44,6 +44,7 @@
     isReviewDue,
     loadLastReviewAt,
     recordReview,
+    summariseFreshSuggestions,
     yesterdayHasContent,
   } from '$lib/chat/daily-review';
   import { suggestCommand } from '$lib/chat/intent-suggester';
@@ -60,6 +61,7 @@
   import { model } from '$lib/state.svelte';
   import { createWebSpeechTranscriber } from '$lib/transcribe';
   import { vault } from '$lib/vault';
+  import type { NotePath } from '$lib/vault/types';
 
   registerCoreHandlers();
   const sharedLlmRunner: SlashLlmRunner = {
@@ -138,6 +140,11 @@
   // Phase 5.5: daily review prompt. Set on mount when > 24h since last
   // review AND yesterday's daily journal has substantive content.
   let reviewSuggestionPath = $state<string | undefined>(undefined);
+  // Phase 5.8: cumulative count + source list of fresh suggestion sidecars
+  // (across notes + chats) since the last review. When populated, the
+  // banner switches from "yesterday's journal" copy to "N captures across
+  // M sources" — and the Organize button targets the first source path.
+  let reviewFreshSummary = $state<{ count: number; sources: NotePath[] } | undefined>(undefined);
 
   // Hydrate the most recent session on mount; create a fresh one if none.
   $effect(() => {
@@ -171,9 +178,21 @@
       try {
         const lastAt = await loadLastReviewAt(chatVault);
         if (isReviewDue(lastAt, Date.now())) {
-          const yesterday = await yesterdayHasContent(chatVault, new Date());
-          if (yesterday.hasContent) {
-            reviewSuggestionPath = yesterday.path;
+          // Phase 5.8: prefer the cumulative summary if any fresh suggestion
+          // sidecars exist — they reflect auto-organize work that already
+          // ran in the background across journal + chat sources.
+          const summary = await summariseFreshSuggestions(chatVault, lastAt);
+          if (summary.freshSuggestionCount > 0) {
+            reviewFreshSummary = {
+              count: summary.freshSuggestionCount,
+              sources: summary.freshSources,
+            };
+            reviewSuggestionPath = summary.freshSources[0];
+          } else {
+            const yesterday = await yesterdayHasContent(chatVault, new Date());
+            if (yesterday.hasContent) {
+              reviewSuggestionPath = yesterday.path;
+            }
           }
         }
       } catch (error: unknown) {
@@ -358,6 +377,7 @@
       });
     })();
     reviewSuggestionPath = undefined;
+    reviewFreshSummary = undefined;
     setTimeout(() => {
       void send();
     }, 0);
@@ -371,6 +391,7 @@
       });
     })();
     reviewSuggestionPath = undefined;
+    reviewFreshSummary = undefined;
   }
 
   async function dispatchLlmEmittedSlash(
@@ -740,8 +761,16 @@
     {#if reviewSuggestionPath !== undefined}
       <div class="daily-review" role="region" aria-label="Daily review suggestion">
         <span class="daily-review-text">
-          You captured stuff in <code>{reviewSuggestionPath}</code> yesterday. Want me to organize it
-          into separate notes?
+          {#if reviewFreshSummary !== undefined}
+            You captured {reviewFreshSummary.count} thing{reviewFreshSummary.count === 1 ? '' : 's'} across
+            {reviewFreshSummary.sources.length} source{reviewFreshSummary.sources.length === 1
+              ? ''
+              : 's'} since your last review. Want me to organize the first one?
+            <code>{reviewSuggestionPath}</code>
+          {:else}
+            You captured stuff in <code>{reviewSuggestionPath}</code> yesterday. Want me to organize it
+            into separate notes?
+          {/if}
         </span>
         <div class="daily-review-actions">
           <button class="apply-review" onclick={acceptDailyReview}>Organize</button>

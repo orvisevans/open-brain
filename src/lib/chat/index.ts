@@ -15,6 +15,7 @@ export { loadSession, listSessions, writeSession, appendMessage } from './storag
 
 const promisesFs = sharedFs.promises as unknown as FsLike;
 const CHATS_ROOT = '/repo/.chats';
+const MEMORY_ROOT = '/repo/.memory';
 
 async function listChatPaths(): Promise<NotePath[]> {
   try {
@@ -30,12 +31,57 @@ async function listChatPaths(): Promise<NotePath[]> {
   }
 }
 
+// Phase 5.8: enumerate `.memory/**.suggestions.json` paths so the daily-review
+// banner can count cumulative fresh suggestions across notes + chats. Walks
+// the directory tree because suggestion sidecars mirror their source path
+// (e.g. `.memory/.chats/<id>.md.suggestions.json`).
+async function listSuggestionPaths(): Promise<NotePath[]> {
+  const out: NotePath[] = [];
+  async function walk(absolute: string): Promise<void> {
+    let entries: string[];
+    try {
+      entries = await promisesFs.readdir(absolute);
+    } catch (error: unknown) {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        (error as { code?: unknown }).code === 'ENOENT'
+      ) {
+        return;
+      }
+      throw error;
+    }
+    for (const entry of entries) {
+      if (entry === '.' || entry === '..') continue;
+      const child = `${absolute}/${entry}`;
+      let stats;
+      try {
+        stats = await promisesFs.stat(child);
+      } catch {
+        continue;
+      }
+      if (stats.isDirectory()) {
+        await walk(child);
+      } else if (stats.isFile() && child.endsWith('.suggestions.json')) {
+        out.push(child.slice('/repo/'.length));
+      }
+    }
+  }
+  try {
+    await walk(MEMORY_ROOT);
+  } catch (error: unknown) {
+    logError('chat/list-suggestion-paths', { error });
+  }
+  return out;
+}
+
 // Production singleton wrapping the shared vault. We satisfy `ChatVault` by
 // adding a `listChatPaths()` that walks `.chats/` directly via the shared fs
 // (the standard `vault.listNotes()` is scoped to `notes/`).
-export const chatVault: ChatVault = {
+export const chatVault: ChatVault & { listSuggestionPaths(): Promise<NotePath[]> } = {
   readRaw: (path) => vault.readRaw(path),
   writeNote: (path, content) => vault.writeNote(path, content),
   listNotes: () => vault.listNotes(),
   listChatPaths,
+  listSuggestionPaths,
 };
