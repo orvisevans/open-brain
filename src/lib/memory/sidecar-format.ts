@@ -42,6 +42,10 @@ interface SidecarBody {
     heading?: string;
     start: number;
     end: number;
+    // Phase 5.7: chat-source chunks carry per-message metadata.
+    role?: 'user' | 'assistant' | 'system';
+    messageIndex?: number;
+    messageTimestamp?: number;
   }[];
   summary?: string;
   entities?: { type: string; name: string }[];
@@ -85,6 +89,9 @@ export function serializeSidecar(sidecar: Sidecar): string {
       ...(chunk.heading !== undefined && { heading: chunk.heading }),
       start: chunk.start,
       end: chunk.end,
+      ...(chunk.role !== undefined && { role: chunk.role }),
+      ...(chunk.messageIndex !== undefined && { messageIndex: chunk.messageIndex }),
+      ...(chunk.messageTimestamp !== undefined && { messageTimestamp: chunk.messageTimestamp }),
     })),
     ...(sidecar.summary !== undefined && { summary: sidecar.summary }),
     ...(sidecar.entities !== undefined && { entities: sidecar.entities }),
@@ -137,6 +144,9 @@ export function parseSidecar(content: string): Sidecar {
     ...(entry.heading !== undefined && { heading: entry.heading }),
     start: entry.start,
     end: entry.end,
+    ...(entry.role !== undefined && { role: entry.role }),
+    ...(entry.messageIndex !== undefined && { messageIndex: entry.messageIndex }),
+    ...(entry.messageTimestamp !== undefined && { messageTimestamp: entry.messageTimestamp }),
   }));
 
   return {

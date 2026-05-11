@@ -78,6 +78,27 @@ describe('Vault', () => {
       await vault.writeNote('notes/just-created.md', '');
       expect(await vault.listNotes()).toEqual(['notes/just-created.md']);
     });
+
+    it('does not include chats in listNotes (sibling listing only)', async () => {
+      await vault.writeNote('notes/x.md', '');
+      await vault.writeNote('.chats/abc.md', '');
+      expect(await vault.listNotes()).toEqual(['notes/x.md']);
+    });
+  });
+
+  describe('listChats', () => {
+    it('returns empty array when chats dir missing', async () => {
+      expect(await vault.listChats()).toEqual([]);
+    });
+
+    it('returns markdown files under .chats/ only', async () => {
+      await vault.writeNote('.chats/2026-05-11.md', '');
+      await vault.writeNote('.chats/2026-05-10.md', '');
+      fs.seedFile('/repo/.chats/index.json', '{}');
+      await vault.writeNote('notes/regular.md', '');
+      const list = await vault.listChats();
+      expect(list).toEqual(['.chats/2026-05-10.md', '.chats/2026-05-11.md']);
+    });
   });
 
   describe('with custom repoDirectory', () => {

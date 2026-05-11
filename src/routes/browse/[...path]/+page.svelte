@@ -159,9 +159,15 @@
     }
   }
 
+  // Phase 5.7: chats are read-only in Browse. The editor enforces the
+  // attribute but the page also gates save scheduling — a re-render or future
+  // refactor can't accidentally trigger a write.
+  const isChat = $derived(path?.startsWith('.chats/') === true);
+
   function handleChange(next: string): void {
     const current = path;
     if (current === undefined) return;
+    if (isChat) return;
     content = next;
     saveStatus = 'pending';
     scheduleSave(current, next);
@@ -232,6 +238,12 @@
     </div>
   {/if}
 
+  {#if isChat}
+    <div class="chat-banner" role="status">
+      <span>💬 read-only · chat session · open <a href="/chat">/chat</a> to continue</span>
+    </div>
+  {/if}
+
   {#if loading}
     <p class="empty">Loading…</p>
   {:else if loadError !== undefined}
@@ -244,6 +256,7 @@
         notes={getNotes}
         onResolveConflict={handleResolveConflict}
         onSave={() => void flushSave()}
+        readOnly={isChat}
       />
     </div>
   {/if}
@@ -321,6 +334,19 @@
     color: var(--color-warn);
     font-weight: 600;
     margin-right: 0.25rem;
+  }
+
+  .chat-banner {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    padding: 0.4rem 0.75rem;
+    border-bottom: 1px dotted var(--color-border);
+    opacity: 0.75;
+  }
+
+  .chat-banner a {
+    color: var(--color-accent);
+    text-decoration: none;
   }
 
   .editor-shell {

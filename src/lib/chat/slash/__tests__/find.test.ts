@@ -51,7 +51,11 @@ describe('/find', () => {
 
   it('returns a message with the matches', async () => {
     const retriever: FindRetriever = {
-      search: () => Promise.resolve(['notes/foo.md', 'notes/bar.md']),
+      search: () =>
+        Promise.resolve([
+          { path: 'notes/foo.md', source: 'note' },
+          { path: 'notes/bar.md', source: 'note' },
+        ]),
     };
     configureFind(retriever);
     const result = await dispatch(parse('/find caching'), makeContext());
@@ -60,6 +64,29 @@ describe('/find', () => {
       expect(result.content).toContain('caching');
       expect(result.content).toContain('notes/foo.md');
       expect(result.content).toContain('notes/bar.md');
+    }
+  });
+
+  it('renders chat hits with the chat glyph + role + excerpt', async () => {
+    const retriever: FindRetriever = {
+      search: () =>
+        Promise.resolve([
+          {
+            path: '.chats/2026-05-11_x.md',
+            source: 'chat',
+            role: 'user',
+            excerpt: 'I was thinking about caching strategies for retrieval.',
+          },
+        ]),
+    };
+    configureFind(retriever);
+    const result = await dispatch(parse('/find caching'), makeContext());
+    expect(result.kind).toBe('message');
+    if (result.kind === 'message') {
+      expect(result.content).toContain('💬');
+      expect(result.content).toContain('.chats/2026-05-11_x.md');
+      expect(result.content).toContain('user');
+      expect(result.content).toContain('caching strategies');
     }
   });
 

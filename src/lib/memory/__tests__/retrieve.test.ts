@@ -36,14 +36,30 @@ function makeSidecar(path: string, chunks: { text: string; vector: Float32Array 
   };
 }
 
+function setRoles(sidecar: Sidecar, roles: ('user' | 'assistant' | 'system')[]): void {
+  for (const [index, role] of roles.entries()) {
+    const chunk = sidecar.embeddings[index];
+    if (chunk === undefined) throw new Error(`no chunk at index ${String(index)}`);
+    chunk.role = role;
+  }
+}
+
 class TestVault extends FakeVault {
   paths: string[] = [];
+  chats: string[] = [];
   seedNote(path: string): void {
     this.setNote(path, 'irrelevant');
     if (!this.paths.includes(path)) this.paths.push(path);
   }
+  seedChat(path: string): void {
+    this.setNote(path, 'irrelevant');
+    if (!this.chats.includes(path)) this.chats.push(path);
+  }
   listNotes(): Promise<string[]> {
     return Promise.resolve([...this.paths]);
+  }
+  listChats(): Promise<string[]> {
+    return Promise.resolve([...this.chats]);
   }
 }
 
@@ -129,6 +145,91 @@ describe('retrieve', () => {
       embedQuery: () => Promise.resolve(vec([1, 0, 0])),
     });
     expect(result.noteRefs).toEqual(['notes/a.md', 'notes/b.md']);
+  });
+
+  it('retrieves over chats alongside notes (Phase 5.7)', async () => {
+    const vault = new TestVault();
+    vault.seedNote('notes/a.md');
+    vault.seedChat('.chats/2026-05-11_x.md');
+    vault.setSidecar(
+      '.memory/notes/a.md',
+      serializeSidecar(makeSidecar('notes/a.md', [{ text: 'note body', vector: vec([1, 0, 0]) }])),
+    );
+    const chatSidecar = makeSidecar('.chats/2026-05-11_x.md', [
+      { text: 'I thought about apples a lot today', vector: vec([1, 0, 0]) },
+    ]);
+    // Tag as a user chat chunk so the retrieval picks it up by default.
+    const chunk0 = chatSidecar.embeddings[0];
+    if (chunk0 === undefined) throw new Error('expected seeded chunk');
+    chunk0.role = 'user';
+    chunk0.messageIndex = 0;
+    chunk0.messageTimestamp = 1_700_000_000_000;
+    vault.setSidecar('.memory/.chats/2026-05-11_x.md', serializeSidecar(chatSidecar));
+
+    const result = await retrieve(vault, 'apple', {
+      k: 5,
+      embedQuery: () => Promise.resolve(vec([1, 0, 0])),
+    });
+    expect(result.chunks.map((c) => c.source)).toEqual(['note', 'chat']);
+    // Note score 1.0; chat score 1.0 * 0.7 = 0.7 → note ranks first.
+    expect(result.chunks[0]?.score).toBeCloseTo(1, 5);
+    expect(result.chunks[1]?.score).toBeCloseTo(0.7, 5);
+    expect(result.chunks[1]?.role).toBe('user');
+    expect(result.chunks[1]?.messageIndex).toBe(0);
+  });
+
+  it('excludes assistant turns from chat retrieval by default', async () => {
+    const vault = new TestVault();
+    vault.seedChat('.chats/x.md');
+    const chatSidecar = makeSidecar('.chats/x.md', [
+      { text: 'user msg', vector: vec([1, 0, 0]) },
+      { text: 'assistant msg', vector: vec([1, 0, 0]) },
+    ]);
+    setRoles(chatSidecar, ['user', 'assistant']);
+    vault.setSidecar('.memory/.chats/x.md', serializeSidecar(chatSidecar));
+
+    const result = await retrieve(vault, 'msg', {
+      embedQuery: () => Promise.resolve(vec([1, 0, 0])),
+    });
+    expect(result.chunks).toHaveLength(1);
+    expect(result.chunks[0]?.role).toBe('user');
+  });
+
+  it('includes assistant turns when opted in', async () => {
+    const vault = new TestVault();
+    vault.seedChat('.chats/x.md');
+    const chatSidecar = makeSidecar('.chats/x.md', [
+      { text: 'user msg', vector: vec([1, 0, 0]) },
+      { text: 'assistant msg', vector: vec([1, 0, 0]) },
+    ]);
+    setRoles(chatSidecar, ['user', 'assistant']);
+    vault.setSidecar('.memory/.chats/x.md', serializeSidecar(chatSidecar));
+
+    const result = await retrieve(vault, 'msg', {
+      embedQuery: () => Promise.resolve(vec([1, 0, 0])),
+      includeAssistantTurns: true,
+    });
+    expect(result.chunks).toHaveLength(2);
+  });
+
+  it('honours includeChats=false (notes-only retrieval)', async () => {
+    const vault = new TestVault();
+    vault.seedNote('notes/a.md');
+    vault.seedChat('.chats/x.md');
+    vault.setSidecar(
+      '.memory/notes/a.md',
+      serializeSidecar(makeSidecar('notes/a.md', [{ text: 'note', vector: vec([1, 0, 0]) }])),
+    );
+    const chatSidecar = makeSidecar('.chats/x.md', [{ text: 'chat', vector: vec([1, 0, 0]) }]);
+    setRoles(chatSidecar, ['user']);
+    vault.setSidecar('.memory/.chats/x.md', serializeSidecar(chatSidecar));
+
+    const result = await retrieve(vault, 'q', {
+      embedQuery: () => Promise.resolve(vec([1, 0, 0])),
+      includeChats: false,
+    });
+    expect(result.chunks).toHaveLength(1);
+    expect(result.chunks[0]?.source).toBe('note');
   });
 
   it('skips sidecars whose vector dimensions do not match', async () => {

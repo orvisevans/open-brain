@@ -18,6 +18,11 @@
 
   let notes = $state<NotePath[]>([]);
   let tree = $state<TreeNode[]>([]);
+  // Phase 5.7: chat sessions are first-class browseable artifacts. We keep
+  // them in a separate tree so they don't tangle with the curated note
+  // structure but still live one click away in the same sidebar.
+  let chats = $state<NotePath[]>([]);
+  let chatTree = $state<TreeNode[]>([]);
   let loading = $state(true);
   let listError = $state<string | undefined>(undefined);
 
@@ -30,9 +35,13 @@
 
   async function refreshNotes(): Promise<void> {
     try {
-      const list = await vault.listNotes();
+      const [list, chatList] = await Promise.all([vault.listNotes(), vault.listChats()]);
       notes = list;
       tree = buildTree(list);
+      // Reverse-chronological: latest sessions on top. The file names are
+      // ISO-shaped, so a string sort works.
+      chats = [...chatList].sort((a, b) => b.localeCompare(a));
+      chatTree = buildTree(chats);
       listError = undefined;
     } catch (error: unknown) {
       logError('browse/list', { error });
@@ -200,12 +209,21 @@
         <p class="empty">Loading…</p>
       {:else if listError !== undefined}
         <p class="error">{listError}</p>
-      {:else if notes.length === 0}
+      {:else if notes.length === 0 && chats.length === 0}
         <p class="empty">
           No notes yet. <a href="/setup">Clone a repo →</a>
         </p>
       {:else}
-        <FileTree nodes={tree} {activePath} />
+        {#if notes.length > 0}
+          <FileTree nodes={tree} {activePath} />
+        {/if}
+        {#if chats.length > 0}
+          <div class="section-divider">
+            <h2>Chats</h2>
+            <span class="count">{chats.length}</span>
+          </div>
+          <FileTree nodes={chatTree} {activePath} />
+        {/if}
       {/if}
     </div>
   </aside>
@@ -331,6 +349,31 @@
     flex: 1;
     overflow: auto;
     padding: 0.5rem 0.5rem 1rem;
+  }
+
+  .section-divider {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 0.75rem 0.5rem 0.25rem;
+    border-top: 1px dotted var(--color-border);
+    margin-top: 0.75rem;
+  }
+
+  .section-divider h2 {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    opacity: 0.55;
+    margin: 0;
+    font-weight: 400;
+  }
+
+  .section-divider .count {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    opacity: 0.4;
   }
 
   .empty,

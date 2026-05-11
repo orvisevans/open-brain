@@ -163,14 +163,19 @@ export function teardownMemoryForTest(): void {
 
 export function notifyMemoryOfChange(path: string): void {
   // Sidecars (.memory/...) are written by the queues themselves — re-enqueueing
-  // would loop. Chat sessions (.chats/...) sync via the same vault → sync
-  // pipeline, but we don't want to embed them either. Same for app-state
-  // metadata under .openbrain/ (Phase 5.5 command-stats and friends).
+  // would loop. App-state metadata under .openbrain/ (Phase 5.5 command-stats
+  // and friends) is not embeddable content.
   if (isSidecarPath(path)) return;
-  if (path.startsWith('.chats/')) return;
   if (path.startsWith('.openbrain/')) return;
+  // Chat sessions (Phase 5.7) flow through the embedding queue so retrieval
+  // can find them, but skip the LLM extraction pass — chats are
+  // conversational rather than note-shaped, and the summary/entities fields
+  // don't carry their value the same way. Auto-organize over chats lands in
+  // Phase 5.8 via the dedicated `'organize'` job kind.
   embeddingQueue.enqueue(path);
-  extractionQueue.enqueue(path);
+  if (!path.startsWith('.chats/')) {
+    extractionQueue.enqueue(path);
+  }
 }
 
 export function getSidecarPath(notePath: string): string {

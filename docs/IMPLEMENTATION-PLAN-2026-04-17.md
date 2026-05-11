@@ -627,53 +627,52 @@ This is foundation, not UX revolution. No new slash commands. No router change. 
 
 ### Vault changes (`src/lib/vault/`)
 
-- [ ] Document the existing `.chats/` convention in vault types/comments: per-session markdown with frontmatter + `## role · timestamp` blocks. Format already exists in `src/lib/chat/format.ts`.
-- [ ] Decide and implement: extend `Vault.listNotes()` to optionally accept an `includeChats` flag, OR add a sibling `Vault.listChats(): Promise<NotePath[]>`. Prefer the latter — keeps the existing notes-only callers untouched and surfaces a clear intent at call sites.
-- [ ] Implementation walks `.chats/` under `repoDirectory`. Same `walk()` helper. Returns repo-relative paths.
-- [ ] Tests: `listChats()` returns empty when dir missing; sorted; markdown-only.
+- [x] Document the existing `.chats/` convention via the new `listChats()` JSDoc and the chat-chunker module header.
+- [x] Added sibling `Vault.listChats(): Promise<NotePath[]>` instead of overloading `listNotes()`. Production callers stay notes-only by default; new chat surfaces opt in explicitly.
+- [x] Implementation walks `.chats/` under `repoDirectory`. Same `walk()` helper.
+- [x] Tests: `listChats()` returns empty when dir missing; markdown-only; `listNotes()` does not include chats.
 
 ### Memory pipeline (`src/lib/memory/`)
 
-- [ ] **Drop the `.chats/` filter in `notifyMemoryOfChange`** (`src/lib/memory/index.ts:170`). Keep the `.memory/` filter (avoids loops) and the `.openbrain/` filter. Add a new branch for chat paths that routes to a chat-specific extractor instead of the standard markdown chunker.
-- [ ] **Role-aware chat chunker** (`src/lib/memory/chat-chunker.ts`): parse a chat session via the existing `parseSession` from `src/lib/chat/format.ts`; produce one chunk per substantive message; each chunk carries `role: 'user' | 'assistant' | 'system'`, `messageIndex`, and `timestamp`.
-- [ ] **Noise filters in the chunker:** drop messages with `< 40` characters of non-whitespace content, drop messages that are pure-emoji or pure-punctuation. Configurable threshold; default conservative.
-- [ ] **Sidecar format extension** (`src/lib/memory/sidecar-format.ts`): each embedding chunk gains optional `role`, `messageIndex`, `timestamp` fields. Schema version bumped; tolerant parser preserves unknown fields and accepts sidecars without these fields (back-compat for note sidecars).
-- [ ] **Extraction skip-LLM for chat sources:** the existing `extraction-queue.ts` runs an LLM extract pass for `summary` / `entities`. For chats, skip that pass — chats are conversational, not noteworthy of summary extraction, and we want them embedded fast. Embedding-only run.
-- [ ] Tests: chat chunker on fixtures (multi-message session, short-message filter, emoji-only filter, missing-frontmatter), sidecar round-trip with role fields, queue routes chat paths to chat extractor.
+- [x] Dropped the `.chats/` filter in `notifyMemoryOfChange`. Embedding queue picks chats up; the LLM extraction queue still skips them (chats are conversational, not summary-shaped).
+- [x] Role-aware chat chunker (`src/lib/memory/chat-chunker.ts`) parses sessions via `parseSession`; one chunk per substantive message; each chunk carries `role`, `messageIndex`, `messageTimestamp`.
+- [x] Noise filters: `< 40` non-whitespace chars dropped; pure-emoji / pure-punctuation dropped (`PURE_EMOJI_OR_PUNCT` regex covers `\p{Emoji}\p{P}\p{S}`).
+- [x] Sidecar format extension: `SidecarEmbeddingChunk` gains optional `role`, `messageIndex`, `messageTimestamp`. Tolerant — note sidecars round-trip without these fields.
+- [x] Embedding queue routes `.chats/*` paths through the chat chunker; hashes the raw on-disk content (frontmatter included) so freshness tracks the session as the user sees it.
+- [x] Tests: chat-chunker covers role + index + noise + invalid-input; embedding-queue covers `.chats/*` routing and role propagation.
 
 ### Retrieval (`src/lib/memory/retrieve.ts`)
 
-- [ ] **Retrieval iterates chats alongside notes.** Add a second pass over `vault.listChats()` (read sidecars same as notes). `RetrievalVault` gains an optional `listChats?: () => Promise<NotePath[]>`; absent → behaves as today.
-- [ ] **Source-aware scoring.** Multiply chat-chunk scores by a configurable `chatWeight` (default `0.7`) before ranking. Tuning point: keep notes preferred when both contain the answer.
-- [ ] **Default role filter.** Retrieval options gain `includeAssistantTurns?: boolean` (default `false`). Avoids the model citing itself.
-- [ ] `RetrievedChunk` gains optional `role` and `source: 'note' | 'chat'` (derived from notePath prefix). Tests for both source types and the assistant-turn filter.
-- [ ] `/find` handler surfaces the source — render chat hits as `💬 .chats/<id> · user · "<snippet>"`. Update `src/lib/chat/slash/handlers/find.ts`.
+- [x] `RetrievalVault` gains optional `listChats?()`; absent → notes-only retrieval (back-compat for tests + future callers that want notes-only on purpose).
+- [x] Source-aware scoring: chat chunks get `chatWeight` (default `0.7`) before ranking.
+- [x] `includeAssistantTurns` option (default `false`); assistant chunks filtered out by default to avoid the model citing itself.
+- [x] `RetrievedChunk` gains optional `source: 'note' | 'chat'` plus `role`, `messageIndex`, `messageTimestamp`. Optional `source` for back-compat with directly-constructed chunks in older tests.
+- [x] `/find` handler renders chat hits as `💬 <path> · <role> — <excerpt>`. New `FindHit` type carries source, role, excerpt across the handler boundary.
 
 ### Browse tab (`src/routes/browse/`)
 
-- [ ] Sidebar gets a **Chats** section below Notes. Reuses `FileTree` with a different `roots` prop or a sibling tree. Loads via `vault.listChats()`.
-- [ ] Click a chat → navigate `/browse/.chats/<id>.md`. Existing `[...path]` route already handles the read.
-- [ ] Render mode: chats are markdown-readable as-is (the `## role · timestamp` blocks render fine), but the CodeMirror editor treats them as editable. **Render chats as read-only** by default — they're history. Add a small banner "read-only · chat session · open in /chat to continue".
-- [ ] Empty-state copy when no chats exist yet.
-- [ ] Tests for the chat-source branch in `tree.ts` if needed; otherwise validate via manual browse.
+- [x] Sidebar gets a `Chats` section below the Notes tree (`+layout.svelte`). Loaded via `vault.listChats()`; reverse-chronological by filename.
+- [x] Click a chat → existing `[...path]` route renders the file.
+- [x] Editor accepts a `readOnly` prop (uses CodeMirror's `EditorState.readOnly` + `EditorView.editable`). The `[...path]` page derives `isChat` from the path and passes `readOnly={isChat}`, plus gates save scheduling, plus renders a "read-only · chat session" banner.
+- [x] Empty-state preserved (no notes AND no chats → existing "Clone a repo →" copy).
 
 ### Configuration knobs
 
-- [ ] `MEMORY_CHAT_MIN_CHARS` (default `40`) and `MEMORY_CHAT_INCLUDE_ROLES` (default `['user', 'assistant']`, with assistant turns filtered out of retrieval by default but still embedded so the user can opt in via `/find --include-assistant`).
-- [ ] `RETRIEVAL_CHAT_WEIGHT` (default `0.7`).
+- [x] `chunkChatSession({ minChars })` defaults to `40`; tests use `5` to validate the override.
+- [x] `retrieve({ chatWeight, includeChats, includeAssistantTurns })` — defaults `0.7` / `true` / `false`.
 
 ### Testing
 
-- [ ] Unit: chat chunker, role-aware sidecar round-trip, retrieval with mixed sources, source weighting, assistant-turn exclusion, `vault.listChats`.
-- [ ] Manual: chat a few turns; verify `.memory/.chats/<id>.json` appears; reload; `/find <topic>` surfaces the chat snippet; Browse shows the chat under a Chats section and renders it.
+- [x] Unit: chat chunker (6), `vault.listChats` (2), embedding-queue chat routing (1), retrieve mixed-source + role filter + notes-only opt-out (4), find chat hit rendering (1). 14 new tests; total now 342 across 43 files.
+- [ ] Manual: chat a few turns; verify `.memory/.chats/<id>.json` appears; reload; `/find <topic>` surfaces the chat snippet; Browse shows the chat under the Chats section and renders read-only. _Saved for the user's primary tab; ingredients shipped._
 
 ### Exit criteria
 
-- [ ] Chats are embedded and retrievable; `/find` surfaces them; weights keep notes preferred when both exist.
-- [ ] Browse tab lists chats and renders them readably.
-- [ ] No regression in note retrieval — existing `/find` / chat-RAG behavior unchanged on note-only vaults.
-- [ ] `npm run check` green.
-- [ ] Tag `phase-5.7-complete`.
+- [x] Chats are embedded and retrievable; `/find` surfaces them; weights keep notes preferred when both exist (verified by test, score 1.0 vs 0.7).
+- [x] Browse tab lists chats and renders them readably.
+- [x] No regression in note retrieval — all pre-existing 328 tests still green; only additions.
+- [x] `npm run check` green.
+- [x] Tag `phase-5.7-complete`.
 
 ---
 

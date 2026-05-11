@@ -81,6 +81,7 @@
   const sharedRetrievalVault = {
     readRaw: (path: string) => vault.readRaw(path),
     listNotes: () => vault.listNotes(),
+    listChats: () => vault.listChats(),
   };
   configureOrganize(sharedLlmRunner, {
     readRaw: (path) => vault.readRaw(path),
@@ -262,10 +263,14 @@
     session = working;
 
     try {
+      // Phase 5.7: pass listChats so chat-RAG can surface past conversations.
+      // Notes still dominate (chatWeight=0.7) but searching for a topic the
+      // user typed in chat last week now actually finds it.
       const retrieval = await retrieve(
         {
           readRaw: (path) => vault.readRaw(path),
           listNotes: () => vault.listNotes(),
+          listChats: () => vault.listChats(),
         },
         text,
       );

@@ -20,11 +20,17 @@ import { chunkMarkdown, countTokens, embedBatch, EMBEDDING_MODEL_ID } from '$lib
 import { logError } from '$lib/log';
 import type { NotePath } from '$lib/vault/types';
 
+import { chunkChatSession } from './chat-chunker';
 import { hashContent, isSidecarFresh } from './hash';
 import type { QueueStorage } from './queue-storage';
 import { readSidecar, writeSidecar, type SidecarVault } from './sidecar';
 import type { Sidecar, SidecarEmbeddingChunk } from './types';
 import { SIDECAR_SCHEMA_VERSION } from './types';
+
+// Chat session files live under `.chats/` and use the chat-aware chunker so
+// retrieval can carry role + message metadata. Anything else uses the
+// markdown chunker. Phase 5.7.
+const CHAT_PREFIX = '.chats/';
 
 export interface EmbeddingQueueOptions {
   vault: EmbeddingVault;
@@ -40,6 +46,10 @@ export interface EmbeddingQueueOptions {
 
 export interface EmbeddingVault extends SidecarVault {
   readNote(path: NotePath): Promise<{ content: string }>;
+}
+
+function isChatPath(path: NotePath): boolean {
+  return path.startsWith(CHAT_PREFIX);
 }
 
 export type EmbeddingQueueState = 'idle' | 'waiting' | 'running' | 'error';
@@ -176,32 +186,67 @@ export function createEmbeddingQueue(options: EmbeddingQueueOptions): EmbeddingQ
   }
 
   async function processPath(path: NotePath): Promise<void> {
-    const note = await options.vault.readNote(path);
-    const noteHash = await hashContent(note.content);
+    // Chat sessions read the raw on-disk markdown so the chat chunker can
+    // see the role/timestamp headers; readNote would strip frontmatter
+    // metadata we need. Hash the raw content too — embedding-freshness is
+    // about source identity, not about post-parse content.
+    const isChat = isChatPath(path);
+    let chunkable: string;
+    if (isChat) {
+      chunkable = await options.vault.readRaw(path);
+    } else {
+      const note = await options.vault.readNote(path);
+      chunkable = note.content;
+    }
+    const noteHash = await hashContent(chunkable);
     const existing = await readSidecar(options.vault, path);
     if (existing !== undefined && isSidecarFresh(noteHash, existing)) {
       // Already up-to-date — nothing to do.
       return;
     }
 
-    const chunks = await chunkMarkdown(note.content, { countTokens });
     let embeddings: SidecarEmbeddingChunk[] = [];
-    if (chunks.length > 0) {
-      const vectors = await embedBatch(chunks.map((chunk) => chunk.text));
-      embeddings = chunks.map((chunk, index) => {
-        const vector = vectors[index];
-        if (vector === undefined) {
-          throw new Error(`embedder returned no vector for chunk ${String(index)}`);
-        }
-        return {
-          index: chunk.index,
-          text: chunk.text,
-          vector,
-          ...(chunk.heading !== undefined && { heading: chunk.heading }),
-          start: chunk.start,
-          end: chunk.end,
-        };
-      });
+    if (isChat) {
+      const chatChunks = await chunkChatSession(chunkable, { countTokens });
+      if (chatChunks.length > 0) {
+        const vectors = await embedBatch(chatChunks.map((chunk) => chunk.text));
+        embeddings = chatChunks.map((chunk, index) => {
+          const vector = vectors[index];
+          if (vector === undefined) {
+            throw new Error(`embedder returned no vector for chunk ${String(index)}`);
+          }
+          return {
+            index: chunk.index,
+            text: chunk.text,
+            vector,
+            ...(chunk.heading !== undefined && { heading: chunk.heading }),
+            start: chunk.start,
+            end: chunk.end,
+            role: chunk.role,
+            messageIndex: chunk.messageIndex,
+            messageTimestamp: chunk.messageTimestamp,
+          };
+        });
+      }
+    } else {
+      const chunks = await chunkMarkdown(chunkable, { countTokens });
+      if (chunks.length > 0) {
+        const vectors = await embedBatch(chunks.map((chunk) => chunk.text));
+        embeddings = chunks.map((chunk, index) => {
+          const vector = vectors[index];
+          if (vector === undefined) {
+            throw new Error(`embedder returned no vector for chunk ${String(index)}`);
+          }
+          return {
+            index: chunk.index,
+            text: chunk.text,
+            vector,
+            ...(chunk.heading !== undefined && { heading: chunk.heading }),
+            start: chunk.start,
+            end: chunk.end,
+          };
+        });
+      }
     }
 
     // Preserve any LLM-extracted fields from the prior sidecar so we don't

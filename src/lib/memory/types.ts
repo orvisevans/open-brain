@@ -21,6 +21,12 @@ export interface SidecarEmbeddingChunk {
   // location. Both are character offsets into the note body (post-frontmatter).
   start: number;
   end: number;
+  // Chat-source chunks (Phase 5.7) carry per-message metadata so retrieval
+  // can filter by role (default: skip assistant turns) and attribute hits to
+  // a specific moment in the session. Absent for ordinary note chunks.
+  role?: 'user' | 'assistant' | 'system';
+  messageIndex?: number;
+  messageTimestamp?: number;
 }
 
 export interface SidecarLink {

@@ -23,6 +23,9 @@ import type { Sidecar } from './types';
 export interface RetrievalVault {
   readRaw(path: NotePath): Promise<string>;
   listNotes(): Promise<NotePath[]>;
+  // Optional: surface chat sessions for cross-source retrieval (Phase 5.7).
+  // Implementations that don't supply this behave as today — notes only.
+  listChats?(): Promise<NotePath[]>;
 }
 
 export interface RetrievedChunk {
@@ -37,6 +40,15 @@ export interface RetrievedChunk {
   // Pulled from the sidecar so consumers can show "summary X" without a
   // second read.
   summary?: string;
+  // Phase 5.7: distinguishes chat-source chunks (role, messageIndex,
+  // messageTimestamp present) from regular notes. `source` is derived from
+  // notePath prefix and lifted here so consumers don't have to re-derive.
+  // Optional for back-compat with callers that constructed RetrievedChunk
+  // directly before Phase 5.7; absent → treat as `'note'`.
+  source?: 'note' | 'chat';
+  role?: 'user' | 'assistant' | 'system';
+  messageIndex?: number;
+  messageTimestamp?: number;
 }
 
 export interface RetrievalResult {
@@ -51,9 +63,27 @@ export interface RetrieveOptions {
   // Defaults to embedding the query via the production embedder. Tests pass
   // a deterministic stub.
   embedQuery?: (query: string) => Promise<Float32Array>;
+  // Phase 5.7. When true, retrieve over chat sidecars in addition to notes.
+  // Default true so chat-RAG benefits automatically; callers that want a
+  // notes-only retrieval pass `false`.
+  includeChats?: boolean;
+  // Phase 5.7. Multiplier on chat-chunk cosine scores before ranking.
+  // Default `0.7`: keeps notes preferred when both contain the answer, but
+  // chats can still win when they're the only or by-far-best source.
+  chatWeight?: number;
+  // Phase 5.7. When false (default), assistant-role chat chunks are
+  // excluded entirely — the model citing itself is rarely useful and adds
+  // noise. Set true to include them (e.g. for `/find --include-assistant`).
+  includeAssistantTurns?: boolean;
 }
 
 const DEFAULT_K = 5;
+const DEFAULT_CHAT_WEIGHT = 0.7;
+const CHAT_PREFIX = '.chats/';
+
+function isChatPath(path: NotePath): boolean {
+  return path.startsWith(CHAT_PREFIX);
+}
 
 export async function retrieve(
   vault: RetrievalVault,
@@ -62,6 +92,9 @@ export async function retrieve(
 ): Promise<RetrievalResult> {
   const k = options.k ?? DEFAULT_K;
   const embedFunction = options.embedQuery ?? embed;
+  const includeChats = options.includeChats ?? true;
+  const chatWeight = options.chatWeight ?? DEFAULT_CHAT_WEIGHT;
+  const includeAssistantTurns = options.includeAssistantTurns ?? false;
 
   if (query.trim() === '' || k <= 0) {
     return { query, chunks: [], noteRefs: [] };
@@ -69,9 +102,17 @@ export async function retrieve(
 
   const queryVector = await embedFunction(query);
   const notePaths = await vault.listNotes();
+  const chatPaths = includeChats && vault.listChats !== undefined ? await vault.listChats() : [];
+
+  // Concatenating notes + chats and tagging source lets us iterate once and
+  // apply per-source rules in the loop.
+  const allPaths: { path: NotePath; source: 'note' | 'chat' }[] = [
+    ...notePaths.map((path) => ({ path, source: 'note' as const })),
+    ...chatPaths.map((path) => ({ path, source: 'chat' as const })),
+  ];
 
   const candidates: RetrievedChunk[] = [];
-  for (const path of notePaths) {
+  for (const { path, source } of allPaths) {
     let sidecar: Sidecar | undefined;
     try {
       sidecar = await readSidecar(vault, path);
@@ -80,9 +121,17 @@ export async function retrieve(
       continue;
     }
     if (sidecar === undefined) continue;
+    // Defensive: a chat path with a non-chat sidecar (or vice versa) shouldn't
+    // happen but `source` is decided by path prefix so they stay aligned.
+    const resolvedSource: 'note' | 'chat' = isChatPath(path) ? 'chat' : source;
+
     for (const chunk of sidecar.embeddings) {
       if (chunk.vector.length !== queryVector.length) continue;
-      const score = cosine(queryVector, chunk.vector);
+      if (resolvedSource === 'chat' && !includeAssistantTurns && chunk.role === 'assistant') {
+        continue;
+      }
+      const rawScore = cosine(queryVector, chunk.vector);
+      const score = resolvedSource === 'chat' ? rawScore * chatWeight : rawScore;
       candidates.push({
         notePath: path,
         chunkIndex: chunk.index,
@@ -90,6 +139,12 @@ export async function retrieve(
         ...(chunk.heading !== undefined && { heading: chunk.heading }),
         score,
         ...(sidecar.summary !== undefined && { summary: sidecar.summary }),
+        source: resolvedSource,
+        ...(chunk.role !== undefined && { role: chunk.role }),
+        ...(chunk.messageIndex !== undefined && { messageIndex: chunk.messageIndex }),
+        ...(chunk.messageTimestamp !== undefined && {
+          messageTimestamp: chunk.messageTimestamp,
+        }),
       });
     }
   }

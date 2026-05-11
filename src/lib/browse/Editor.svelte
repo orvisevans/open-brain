@@ -31,9 +31,15 @@
     onResolveConflict?: (next: string) => void;
     /** Called on Cmd/Ctrl-S — host should flush any pending save immediately. */
     onSave?: () => void;
+    /**
+     * When true, the editor accepts no input. Used by Phase 5.7 to show chat
+     * sessions as readable history without giving the user a way to scribble
+     * over them and confuse the chat parser on next load.
+     */
+    readOnly?: boolean;
   }
 
-  const { value, onChange, notes, onResolveConflict, onSave }: Properties = $props();
+  const { value, onChange, notes, onResolveConflict, onSave, readOnly }: Properties = $props();
 
   let host = $state<HTMLDivElement | undefined>(undefined);
   let view: EditorView | undefined;
@@ -45,7 +51,7 @@
     // `host`. `host` only changes once (when the bind:this populates it) so
     // the editor mounts exactly once for the component's lifetime.
     const initialState = untrack(() =>
-      createState(value, onChange, notes, onResolveConflict, onSave),
+      createState(value, onChange, notes, onResolveConflict, onSave, readOnly === true),
     );
     view = new EditorView({ state: initialState, parent: host });
 
@@ -74,10 +80,13 @@
     notesProvider: NotePathProvider,
     onResolveConflictCallback: ((next: string) => void) | undefined,
     onSaveCallback: (() => void) | undefined,
+    isReadOnly: boolean,
   ): EditorState {
     return EditorState.create({
       doc: initial,
       extensions: [
+        EditorState.readOnly.of(isReadOnly),
+        EditorView.editable.of(!isReadOnly),
         history(),
         keymap.of([
           // Mod-s = Cmd-S on macOS, Ctrl-S elsewhere. CodeMirror normalises

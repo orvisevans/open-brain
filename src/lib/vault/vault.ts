@@ -20,11 +20,17 @@ export interface Vault {
   readRaw(path: NotePath): Promise<string>;
   writeNote(path: NotePath, content: string): Promise<void>;
   listNotes(): Promise<NotePath[]>;
+  // Lists chat session files under `.chats/`. Returns repo-relative paths
+  // sorted alphabetically. Sibling to listNotes — kept separate so existing
+  // notes-only callers (Browse note tree, retrieval over `notes/`) are
+  // unaffected and so callers express intent explicitly. Phase 5.7.
+  listChats(): Promise<NotePath[]>;
 }
 
 export interface VaultOptions {
   repoDirectory?: string;
   notesDirectory?: string;
+  chatsDirectory?: string;
   // Notified after a successful `writeNote`. The SyncEngine subscribes via
   // this hook in production; tests omit it. Errors during the callback are
   // logged but do not propagate — sync notification is best-effort.
@@ -33,10 +39,12 @@ export interface VaultOptions {
 
 const DEFAULT_REPO_DIRECTORY = '/repo';
 const DEFAULT_NOTES_DIRECTORY = 'notes';
+const DEFAULT_CHATS_DIRECTORY = '.chats';
 
 export function createVault(fs: FsLike, options: VaultOptions = {}): Vault {
   const repoDirectory = options.repoDirectory ?? DEFAULT_REPO_DIRECTORY;
   const notesDirectory = options.notesDirectory ?? DEFAULT_NOTES_DIRECTORY;
+  const chatsDirectory = options.chatsDirectory ?? DEFAULT_CHATS_DIRECTORY;
 
   function toAbsolute(path: NotePath): string {
     return joinPosix(repoDirectory, path);
@@ -101,7 +109,25 @@ export function createVault(fs: FsLike, options: VaultOptions = {}): Vault {
       .sort((a, b) => a.localeCompare(b));
   }
 
-  return { readNote, readRaw, writeNote, listNotes };
+  async function listChats(): Promise<NotePath[]> {
+    const root = joinPosix(repoDirectory, chatsDirectory);
+    const out: NotePath[] = [];
+    try {
+      await walk(fs, root, out);
+    } catch (error: unknown) {
+      if (isNotFound(error)) {
+        return [];
+      }
+      logError('vault/list-chats', { error });
+      throw error;
+    }
+    return out
+      .filter((path) => path.endsWith('.md'))
+      .map((absolute) => relativeFrom(repoDirectory, absolute))
+      .sort((a, b) => a.localeCompare(b));
+  }
+
+  return { readNote, readRaw, writeNote, listNotes, listChats };
 }
 
 async function walk(fs: FsLike, current: string, out: string[]): Promise<void> {

@@ -211,4 +211,50 @@ describe('EmbeddingQueue', () => {
     // But sourceHash and embeddings are fresh.
     expect(after.sourceHash).not.toBe(before.sourceHash);
   });
+
+  it('routes .chats/* paths through the chat chunker (Phase 5.7)', async () => {
+    const vault = new FakeVault();
+    const storage = new FakeQueueStorage();
+    const clock = createFakeClock();
+    const chatRaw = [
+      '---',
+      'schema_version: 1',
+      'session_id: 2026-05-11_test',
+      'started_at: 1700000000000',
+      'last_updated_at: 1700000005000',
+      '---',
+      '',
+      '## user · 2026-05-11 09:00',
+      '',
+      'I spent the morning reading about retrieval augmented generation and embedding strategies.',
+      '',
+      '## assistant · 2026-05-11 09:01',
+      '',
+      'Embedding strategies vary by chunk granularity, normalisation, and reranking pipelines.',
+      '',
+    ].join('\n');
+    vault.setNote('.chats/2026-05-11_test.md', chatRaw);
+
+    const queue = createEmbeddingQueue({
+      vault,
+      storage,
+      debounceMs: 10,
+      setTimeoutImpl: clock.setTimeout,
+      clearTimeoutImpl: clock.clearTimeout,
+    });
+
+    queue.enqueue('.chats/2026-05-11_test.md');
+    await clock.advance(50);
+    await queue.whenIdle();
+
+    const raw = vault.getSidecar('.memory/.chats/2026-05-11_test.md');
+    expect(raw).toBeDefined();
+    const sidecar = parseSidecar(raw ?? '');
+    expect(sidecar.source).toBe('.chats/2026-05-11_test.md');
+    expect(sidecar.embeddings.length).toBe(2);
+    expect(sidecar.embeddings[0]?.role).toBe('user');
+    expect(sidecar.embeddings[0]?.messageIndex).toBe(0);
+    expect(sidecar.embeddings[1]?.role).toBe('assistant');
+    expect(sidecar.embeddings[1]?.messageIndex).toBe(1);
+  });
 });
