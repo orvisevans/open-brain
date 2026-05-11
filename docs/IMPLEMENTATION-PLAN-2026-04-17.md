@@ -18,6 +18,7 @@
 | 5.6 — Note lifecycle commands | ✅ shipped | `phase-5.6-complete` |
 | 5.7 — Chats as first-class memory | ✅ shipped | `phase-5.7-complete` |
 | 5.8 — Auto-organize + density review | ✅ shipped | `phase-5.8-complete` |
+| 5.9 — Persona & capabilities context | 🔜 planned, not started | — |
 | 6 — Attachments | ⛔ moved to POST-MVP | — |
 | 7 — Setup polish | ⛔ moved to POST-MVP | — |
 | 8 — Design pass | ✅ shipped (subset; rest deferred) | `phase-8-complete` |
@@ -753,6 +754,160 @@ Today `/organize @path` is manual: the user types it, the LLM extracts, proposal
 
 ---
 
+## Phase 5.9 — Persona & capabilities context
+
+> Planned 2026-05-11 after a real-user chat showed the model has no idea what app it lives in. Logged conversation: user asks "what can you do?" — model says "I can answer your questions and generate text", offers nothing specific to Open Brain. User types observational content ("I'm going to bed now…") and the model treats it as a meta-question about its own abilities instead of suggesting `/journal`. Today's system prompt is 30 tokens and tells the model only that it has "the user's second brain" notes to draw from. The model has no concept of slash commands, vault conventions, the user, or that it's a *part* of a system rather than the whole.
+
+### Direction
+
+Two layers of pre-prompt context, composed into the final system prompt above the retrieval block. Both are budget-bounded and pre-cache-friendly.
+
+- **Capabilities** — app-shipped, app-versioned. Lists the slash commands, vault conventions, and behavioral guardrails (when to suggest a command, how to interpret retrieved context). Lives in the bundle as a TS constant so the prompt updates atomically with the code that implements the capabilities. Not user-editable. Versioned in git history.
+- **Persona** — user-edited, synced. Free-form prose + optional frontmatter (name, tone preferences). Lives at `.openbrain/persona.md` so it rides the existing vault → sync pipeline and is invisible to the embedding queue (the `.openbrain/` prefix is already filtered out by `notifyMemoryOfChange`). Empty by default — no opinion shipped.
+
+The structured runtime settings (LLM-emit toggle, theme, retrieval k, auto-organize thresholds…) belong in a sibling `.openbrain/config.yaml` per the original DESIGN §2 plan. That file is a separate concern and is filed under "out of scope for 5.9" below to keep this phase atomic.
+
+### Prior art briefly considered
+
+- **Anthropic's internal `soul.md`** — single curated file describing the model's disposition. The persona slot in 5.9 is the user-facing equivalent.
+- **ChatGPT custom instructions** — two free-form text boxes ("What should ChatGPT know about you?" + "How should it respond?"), capped at ~1500 chars each. The two-prompt split is a useful UX cue but a single free-form file is leaner for the MVP.
+- **Cursor `.cursorrules` / Claude Code `CLAUDE.md`** — project-scoped prompt fragments appended to a base system prompt. Same pattern as our capabilities/persona composition. Both prove the "code-shipped base + repo-shipped override" model works.
+- **Open WebUI / LibreChat model presets** — per-conversation system-prompt picker. Out of scope; single global persona is enough for MVP.
+
+### Why split capabilities from persona
+
+1. **Cache discipline.** The KV-cache spike (§10 2026-05-09) confirmed WebLLM reuses cache only when `messages` is a strict byte-prefix-extension of the previous call. A user-editable capabilities block would bust the cache on every edit. Splitting keeps the capabilities byte-stable across the session.
+2. **Versioning.** When we add a slash command in Phase 5.10 (or rename one), the capabilities text must update for *every* user immediately. A vault file would lag on machines whose sync hasn't run.
+3. **Token budget.** Capabilities can be terse and pre-tuned; persona is the user's variable-length surface. Splitting lets us cap each independently.
+
+### Where the wiring lives
+
+Current path (Phase 5 + 5.5):
+
+```
+SYSTEM_PROMPT  ← const in src/lib/memory/retrieve.ts
+   │
+   └── assembled.systemPrompt ← returned by assembleContext()
+          │
+          └── chat page concatenates with SLASH_EMIT_SYSTEM_INSTRUCTION when toggle on
+                 │
+                 └── { role: 'system', content: systemPrompt }
+```
+
+New path (5.9):
+
+```
+buildSystemPrompt({ capabilities, persona, slashEmit }) ← new helper
+   │
+   ├─ CAPABILITIES_PROMPT (const, src/lib/llm/capabilities.ts)
+   ├─ PERSONA            (loaded from .openbrain/persona.md, optional)
+   ├─ SLASH_EMIT_SYSTEM_INSTRUCTION (existing, conditional)
+   └─ assembled.systemPrompt + retrieval context
+```
+
+### Tasks
+
+#### Capabilities (`src/lib/llm/capabilities.ts` — new)
+
+- [ ] Constant `CAPABILITIES_PROMPT` covering:
+    - App identity ("You are the assistant inside Open Brain, a personal second-brain that lives in the user's browser and syncs notes to their private GitHub repo.")
+    - The vault shape (`notes/`, `journal/`, `lists/`, `.chats/`) and what each is for.
+    - The slash command vocabulary (all 11 — `/save /journal /note /append /list /organize /edit /related /find /archive /tag`) with a one-line use case each.
+    - Behavioral guardrails: "When the user *recounts* their day, ask whether to `/journal` it. When they ask *what can I do*, summarize the capabilities below. Retrieved notes may be irrelevant to small talk — if the user is greeting you, greet them back instead of summarizing notes." This addresses the failed conversation directly.
+    - Hard cap target: ≤ 350 tokens (~1400 chars). Lint-style assertion in tests via `approxTokens`.
+- [ ] `CAPABILITIES_VERSION` — bumped whenever the prompt or command list changes. Surfaced in `/setup` debug section so the user can see which version their model is running against.
+- [ ] One vitest test that checks `CAPABILITIES_PROMPT.length` against the budget (so future edits fail loudly instead of silently bloating the prefix).
+
+#### Persona (`src/lib/persona/` — new module)
+
+- [ ] `PERSONA_PATH: NotePath = '.openbrain/persona.md'`.
+- [ ] `loadPersona(vault) → { frontmatter, body } | undefined` — silent miss if the file doesn't exist (default state).
+- [ ] Optional frontmatter shape: `name`, `pronouns`, `tone`, `focus` (list). Free-form body is the rest.
+- [ ] `renderPersonaForPrompt(persona, options) → string` — assembles `frontmatter` fields into a one-line "User: Orvis · prefers terse, direct responses" header plus the trimmed body. Caps body at ~250 tokens; truncates with `…` and a console.warn if longer (the user opted into the bloat, but we tell them).
+- [ ] First-run default writing: on `bootstrapMemory()` (or a small `bootstrapPersona()`), if `.openbrain/persona.md` doesn't exist and the user is signed in, write a *stub* file:
+    ```markdown
+    ---
+    name:
+    tone:
+    focus: []
+    ---
+
+    # About me
+
+    This is your personal context file. Edit it to tell the model who you are,
+    how you want it to respond, and what you tend to think about. Open Brain
+    will include this in every chat turn. Keep it short — every word here is
+    counted against your model's context window. Leave the file empty (or
+    delete it) to opt out.
+    ```
+    The stub is short enough that a fresh empty install reads as ~30 tokens; the user can flesh it out or wipe it.
+- [ ] Unit tests for the loader, the renderer, the truncation path, and the missing-file path.
+
+#### System-prompt builder (`src/lib/llm/system-prompt.ts` — new)
+
+- [ ] `buildSystemPrompt({ capabilities, persona, retrievalBlock, slashEmit })` — pure function. Returns the final string in stable order:
+    ```
+    <CAPABILITIES>
+
+    <PERSONA — only if present>
+
+    <existing retrieval system prompt — "You are the user's second brain. …">
+    Cite the note path when you draw from it. …
+
+    <SLASH_EMIT_SYSTEM_INSTRUCTION — only if toggle on>
+    ```
+    Order is deliberate: capabilities first because they're stable byte-prefix; persona second; retrieval guardrails third; slash-emit last (toggle-driven, so it bumps to the end of the prefix when on).
+- [ ] Token-budget enforcement: caller passes a `softCap` (default 600 tokens). The builder returns `{ prompt, tokensUsed, warnings: [...] }`. If over the cap, persona body is truncated first; capabilities is never trimmed (it's the warranty card). Slash-emit is also never trimmed (it's behaviorally load-bearing when on).
+- [ ] Replaces the inline concat in `src/routes/chat/+page.svelte:300-302`.
+- [ ] Tests: 6+ covering order, persona-absent, persona-truncated, over-budget warning shape.
+
+#### Chat-page wiring
+
+- [ ] On chat mount, `loadPersona(chatVault)` once and stash in a non-reactive `let` (persona doesn't change mid-session; if the user edits it via Browse, the next chat session picks it up). Refresh on `subscribeToVaultChanges` if the change path is `.openbrain/persona.md`.
+- [ ] `streamChat`/`runWithRAG` call site builds the system prompt via `buildSystemPrompt`. Slash-handler context (which also runs LLM calls for `/edit` and `/organize`) gets the same builder.
+- [ ] Surface the assembled system prompt under `?debug=1` (covered in POST-MVP §design-and-a11y but stub the seam here — a `getLastSystemPrompt()` accessor for the debug panel).
+
+#### Editing UX
+
+- [ ] `.openbrain/persona.md` is browseable (Browse already lists `.openbrain/` via `vault.listNotes()`? — verify; if not, add a Settings section like the Chats section did in Phase 5.7). _Confirmed: vault.listNotes() walks `notes/` only, so `.openbrain/persona.md` is not in the existing tree. Add an "App settings" section under the Chats section, populated by a new `vault.listAppSettings()` or by pointing at known paths (`.openbrain/persona.md`, future `.openbrain/config.yaml`)._
+- [ ] Browse banner on `.openbrain/persona.md`: a small note above the editor explaining the token-budget tradeoff. (The chat read-only banner pattern from Phase 5.7 is the precedent — same shape, different copy.)
+- [ ] No slash command for editing in this phase. `Cmd+K` palette would be the right surface but that's POST-MVP. Reuse the existing `/edit @.openbrain/persona.md <instruction>` flow for natural-language updates.
+
+#### Documentation
+
+- [ ] Document the capabilities/persona split in this plan's Decision Log (which surface owns which, and why) when the phase ships.
+- [ ] Add a one-line note in DESIGN §2 (theme modes) that `.openbrain/config.yaml` is the home for structured settings and `.openbrain/persona.md` is the home for prose persona. Phase 5.9 ships the persona; config.yaml is in the deferred items below.
+
+### Out of scope for 5.9
+
+- **Structured config (`.openbrain/config.yaml`).** Theme switcher, retrieval knobs, auto-organize thresholds. These are real wants but each one is small and they're better added as a phase-by-phase concern.
+- **Per-session persona overrides.** The single-global model is enough for MVP.
+- **Persona embedding / retrieval.** The persona is small (≤ 250 tokens) and load-bearing on every turn — it doesn't need to be retrieved, it needs to be present. The `.openbrain/` prefix already excludes it from the embedding queue.
+- **LLM-generated persona seeds.** "Tell me about yourself and I'll write your persona." Lovely UX but adds a chicken-and-egg dependency on having a loaded model during onboarding.
+
+### Token-budget back-of-envelope
+
+| Slot | Target tokens | Notes |
+|---|---|---|
+| Capabilities | ≤ 350 | Hard cap; lint-tested. |
+| Persona | ≤ 250 (truncated if longer) | Stub default ≈ 30 tokens. |
+| Retrieval system instructions (existing) | ~30 | Unchanged. |
+| Slash-emit (when on) | ~120 | Existing constant. |
+| **Total system prompt** | **≤ 750** | Comfortable inside the ~1000-token slice we reserve for non-retrieval, non-response budget on Gemma-2B's 8K window. |
+
+### Exit criteria
+
+- [ ] `CAPABILITIES_PROMPT` is in the bundle, lint-bounded, version-stamped.
+- [ ] `.openbrain/persona.md` ships a stub on first run; user can edit in Browse and changes take effect on next chat turn.
+- [ ] `buildSystemPrompt` replaces the inline concat in the chat page and in the slash handlers' LLM runner.
+- [ ] Token-budget warning fires on over-bloat without breaking the call.
+- [ ] Manual: type "what can you do?" — model now answers in Open-Brain-specific terms (mentions slash commands).
+- [ ] Manual: type "I'm going to bed, I petted the cat" — model suggests `/journal` rather than treating it as meta.
+- [ ] `npm run check` green.
+- [ ] Tag `phase-5.9-complete`.
+
+---
+
 ## Phases 6 & 7 — moved to POST-MVP-PLANS
 
 2026-05-11: Phase 6 (Attachments) and Phase 7 (First-run setup polish + compat detection) were moved to [POST-MVP-PLANS-2026-05-11.md](./POST-MVP-PLANS-2026-05-11.md). The MVP critical path runs Phase 5.6 → Phase 8 directly. The production GitHub App swap and serverless proxy port from the old Phase 7 stay on the MVP critical path — they live in Phase 11.
@@ -854,6 +1009,7 @@ Up to now, Vitest covers pure/functional modules and UI is verified manually (Ph
     - Phase 5.6: `/edit` produces a replace diff; `/related` writes a See-Also section; `/find` lists results; `/archive` stamps `archived_at`; `/tag` merges tags preserving prior lines.
     - Phase 5.7: a chat turn over the noise threshold writes a `.memory/.chats/<id>.md.json` sidecar with role-tagged chunks; `/find` surfaces the chat snippet with the 💬 glyph; Browse shows the chat under a `Chats` section and renders it read-only.
     - Phase 5.8: a journal entry crossing the auto-organize density threshold produces `.suggestions.json` within the debounce window; daily-review banner reflects the cumulative count.
+    - Phase 5.9: capabilities + persona land in the assembled system prompt; over-budget persona truncates with a console warning; missing persona file uses the no-persona path silently.
     - Phase 8: `:focus-visible` shows the phosphor glow ring; `prefers-reduced-motion` disables animation/transition; cyan accent applied to active tab + chat caret.
     - Phase 9: a forced sync error pushes a toast via `ToastHost`; identical messages within 30s collapse with `(×2)`; an actionable toast survives past the auto-dismiss window.
 - [ ] **CI integration.** Add `check:e2e` to the `npm run check` pipeline (or as a separate job if too slow). Tier into smoke (every PR) vs. full (nightly + pre-release) if needed.
