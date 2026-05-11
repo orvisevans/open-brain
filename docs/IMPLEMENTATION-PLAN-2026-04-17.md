@@ -19,6 +19,7 @@
 | 5.7 — Chats as first-class memory | ✅ shipped | `phase-5.7-complete` |
 | 5.8 — Auto-organize + density review | ✅ shipped | `phase-5.8-complete` |
 | 5.9 — Persona & capabilities context | 🔜 planned, not started | — |
+| 5.9.1 — Conversation context overflow | 🔜 planned, not started | — |
 | 6 — Attachments | ⛔ moved to POST-MVP | — |
 | 7 — Setup polish | ⛔ moved to POST-MVP | — |
 | 8 — Design pass | ✅ shipped (subset; rest deferred) | `phase-8-complete` |
@@ -908,6 +909,104 @@ buildSystemPrompt({ capabilities, persona, slashEmit }) ← new helper
 
 ---
 
+## Phase 5.9.1 — Conversation context overflow
+
+> Planned 2026-05-11 alongside 5.9. Today the chat page sends the *entire* session history on every turn ([src/routes/chat/+page.svelte:308-314](../src/routes/chat/+page.svelte)) — the model gets `[system, …all prior turns…, current user]` regardless of session length. On Gemma-2B's 8K window this collides with retrieval after maybe a dozen substantive turns; on Llama-3.2-1B with a smaller effective window it collides sooner. The failure mode today is silent — WebLLM truncates or errors at the model level, and the user has no idea why earlier turns "disappear" from the model's working memory.
+
+### Direction
+
+Compose the chat-call budget explicitly. Trim from the oldest turns when the conversation exceeds the budget. Lean on Phase 5.7's chat-memory layer as the durable copy: dropped turns stay embedded in `.memory/.chats/<id>.md.json` and remain retrievable via RAG, so the model can still answer "what did we talk about earlier?" — it just retrieves them instead of replaying them verbatim.
+
+This is intentionally a sliding-window strategy, not a summarize-and-replace one. Summarize-and-replace adds an extra LLM call per overflow event, produces mediocre summaries on small models, and depends on a stable summary-prompt format. The sliding window + chat-RAG hybrid achieves the same end (recall of old content) at zero extra inference cost.
+
+### Why sliding window beats summarize-and-replace here
+
+| Concern | Sliding window + chat-RAG | Summarize-and-replace |
+|---|---|---|
+| Extra LLM calls per overflow | 0 | 1 |
+| Quality of "old context" recall | Whatever the user asked is retrievable as a chunk | Bottlenecked by summary quality on a 2B model |
+| Bookkeeping | None — chats are already embedded | Need a "summary prefix" message slot + invalidation |
+| Latency to first token on overflow turn | Unchanged | Extra round-trip before generation can start |
+| Reversibility | Old turns are still in `.chats/<id>.md` verbatim | Summary loses fidelity, can't be undone |
+
+If real-world use shows the model frequently needs older turns for short-range coreference (e.g. pronouns from 8 turns back), revisit. The Phase 10.5 e2e suite is the right surface for measuring this.
+
+### Budget composition
+
+On every chat turn, allocate the model's effective context window like this (configurable; defaults below):
+
+| Slot | Default fraction of window | Notes |
+|---|---|---|
+| System prompt (capabilities + persona + retrieval guardrails + slash-emit) | up to 10% | Hard-capped by Phase 5.9's `buildSystemPrompt`. |
+| Retrieval block | 50% | Down from Phase 4's 70%, which pre-dated multi-turn chat sessions and the chat-memory work in Phase 5.7. Tune via the existing `retrievalFraction` option. |
+| Message history (turns before the current one) | 30% | New slot. Sliding-window trim from the oldest until it fits. |
+| Response reserve | 10% | Capped via WebLLM's `max_tokens` so the model can't blow past it. |
+
+These add to 100% of the model's effective window (8192 on Gemma-2B). The math runs once per turn; over-allocations are absorbed by trimming retrieval *or* history depending on which is more elastic for that turn (see "Priority order" below).
+
+### Tasks
+
+#### Tokenization (`src/lib/llm/tokenize.ts` — new)
+
+- [ ] `countMessageTokens(messages, options) → Promise<number>` that uses WebLLM's tokenizer when an engine is loaded (`engine.tokenize(text)` for accurate counts) and falls back to the existing `approxTokens` heuristic otherwise. Tests don't need the real tokenizer — the fallback is the test path.
+- [ ] Counts per role include the ~4-token-per-message overhead OpenAI-style chat formats use (system framing, role tag, separators). Conservative is fine; we'd rather budget low than blow the call.
+- [ ] Memoise per message id within a turn so the budget check doesn't re-tokenize the same message N times during trimming.
+
+#### Budget composer (`src/lib/chat/budget.ts` — new)
+
+- [ ] `composeChatBudget({ contextWindow, fractions })` returns the `{ systemTokens, retrievalTokens, historyTokens, responseTokens }` allocation up front. Single source of truth; both the chat-page and the slash-handler LLM runner read it.
+- [ ] `trimHistoryToBudget(history, currentUserMessage, budget, countTokens)` — pure function. Drops oldest turns first (in pairs where possible so user/assistant balance stays roughly intact). Preserves:
+    - The current user message (never dropped).
+    - The most recent `MIN_KEEP` turns (default 2 user + 2 assistant = 4 messages). Keeps short-range coreference alive even when the conversation is over budget.
+    - Slash-command system messages (`role: 'system'` confirmations like "✓ Saved to journal/…") are dropped from the LLM messages array anyway, so they don't enter this calculation.
+- [ ] Returns `{ trimmed, droppedCount, droppedTokens }` so the chat page can surface a marker.
+- [ ] Tests: 10+ covering pair-wise drop, MIN_KEEP enforcement, current-message-never-dropped, all-fits-no-drop, single-huge-turn-forces-drop-anyway, returns-droppedCount=0 when no trim happened.
+
+#### Priority order when totals don't fit
+
+A pathological case: even after trimming history down to `MIN_KEEP`, the system + retrieval + history + current-message + response still doesn't fit. Priority for further trimming:
+
+1. **Drop retrieval chunks** (lowest-scoring first) — they're recoverable on the next turn if a different query brings them back. Retrieval already does this via the `retrievalBudget` cap; the new code wires the cap to whatever's left after system + history + response are subtracted from the window.
+2. **Trim retrieval text** within remaining chunks — already done by `assembleContext`'s budgeting loop.
+3. **Hard error** if the system prompt + current user message + response reserve alone exceeds the window. Surface as a toast: "Your message is too long for the model's context — split it into smaller pieces." (Will essentially never happen for normal use; only fires on a 4000-token paste.)
+
+`MIN_KEEP` history is never dropped past `MIN_KEEP = 0` automatically. If a user sets `MIN_KEEP` higher than what fits, we honour their preference and trim retrieval instead. The user's intent — "I want recent turns visible" — is more load-bearing than "I want broad retrieval."
+
+#### Chat-page integration
+
+- [ ] Replace the inline `working.messages.slice(0, -1).filter(...).map(...)` block at [src/routes/chat/+page.svelte:308-314](../src/routes/chat/+page.svelte) with `trimHistoryToBudget(history, currentMessage, budget, countTokens)`.
+- [ ] Wire the result into the existing `llmMessages` array.
+- [ ] On `droppedCount > 0`, add a non-persistent in-chat marker above the new turn: `↥ N earlier turns archived to chat memory (search via /find)`. Subtle, monospace, no toast — this is informational, not erroneous.
+- [ ] The chat-session markdown file (`.chats/<id>.md`) keeps the full transcript regardless. We're trimming the *prompt to the model*, not the *record on disk*. Phase 5.7's chat-RAG indexes the whole file; dropped turns stay searchable.
+
+#### Slash-handler LLM runner
+
+- [ ] The same budget logic applies to `/edit` and `/organize` calls but they're single-shot (no history). Their callers pass an empty `history`; the budget composer skips the trim path.
+- [ ] But `/edit` source content and `/organize` source content can themselves blow the budget if the user runs them on a huge note. Wire a soft-cap on the user-prompt length in the runner that mirrors the retrieval budget — refuse with a clear error rather than silent truncation.
+
+#### Settings + observability
+
+- [ ] No new user-facing settings in this phase. Defaults are good defaults; advanced tuning lives behind `.openbrain/config.yaml` whenever that lands.
+- [ ] Under `?debug=1` (deferred from Phase 9 to POST-MVP) surface the per-turn allocation: `system=380 / retrieval=4096 / history=2400 / response=820`. For now, a `console.warn('[openbrain/budget]', allocation)` when a trim happens is enough — useful for the user and for tests.
+
+### Open questions
+
+- [ ] **Where to put MIN_KEEP.** 4 messages is a guess; 2 might be enough on the smallest model, 8 might feel better on the biggest. Could be a config knob; could be derived from model variant. Pick after the e2e suite measures real conversation lengths.
+- [ ] **Does WebLLM's `engine.tokenize()` exist reliably across all variants we ship?** Confirm during 5.9.1 implementation; if not, the `approxTokens` fallback carries.
+- [ ] **Marker format.** `↥ N earlier turns archived` is a guess. UX may prefer "click to see what was dropped" with a small expansion — easy to add later.
+
+### Exit criteria
+
+- [ ] `composeChatBudget` + `trimHistoryToBudget` ship; chat page uses them instead of replaying the full session.
+- [ ] When `droppedCount > 0`, a subtle in-chat marker appears.
+- [ ] Manual: hold a 30-turn conversation; verify the model doesn't error out and the marker appears mid-stream once history starts overflowing.
+- [ ] Manual: ask "what did we discuss 25 turns ago?" — answer comes from chat-RAG retrieval, not from in-prompt history.
+- [ ] Hard-error path tested manually: paste a 5000-token user message; receive the "split into smaller pieces" toast.
+- [ ] `npm run check` green.
+- [ ] Tag `phase-5.9.1-complete`.
+
+---
+
 ## Phases 6 & 7 — moved to POST-MVP-PLANS
 
 2026-05-11: Phase 6 (Attachments) and Phase 7 (First-run setup polish + compat detection) were moved to [POST-MVP-PLANS-2026-05-11.md](./POST-MVP-PLANS-2026-05-11.md). The MVP critical path runs Phase 5.6 → Phase 8 directly. The production GitHub App swap and serverless proxy port from the old Phase 7 stay on the MVP critical path — they live in Phase 11.
@@ -1010,6 +1109,7 @@ Up to now, Vitest covers pure/functional modules and UI is verified manually (Ph
     - Phase 5.7: a chat turn over the noise threshold writes a `.memory/.chats/<id>.md.json` sidecar with role-tagged chunks; `/find` surfaces the chat snippet with the 💬 glyph; Browse shows the chat under a `Chats` section and renders it read-only.
     - Phase 5.8: a journal entry crossing the auto-organize density threshold produces `.suggestions.json` within the debounce window; daily-review banner reflects the cumulative count.
     - Phase 5.9: capabilities + persona land in the assembled system prompt; over-budget persona truncates with a console warning; missing persona file uses the no-persona path silently.
+    - Phase 5.9.1: a 30-turn conversation triggers history trim; the "earlier turns archived" marker appears; `/find` retrieves a dropped turn; a 5000-token user message produces the hard-error toast.
     - Phase 8: `:focus-visible` shows the phosphor glow ring; `prefers-reduced-motion` disables animation/transition; cyan accent applied to active tab + chat caret.
     - Phase 9: a forced sync error pushes a toast via `ToastHost`; identical messages within 30s collapse with `(×2)`; an actionable toast survives past the auto-dismiss window.
 - [ ] **CI integration.** Add `check:e2e` to the `npm run check` pipeline (or as a separate job if too slow). Tier into smoke (every PR) vs. full (nightly + pre-release) if needed.
