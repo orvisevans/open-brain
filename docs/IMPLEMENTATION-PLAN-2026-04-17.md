@@ -1,19 +1,44 @@
 # Open Brain — MVP Implementation Plan
 
-**Date:** 2026-04-17
+**Date:** 2026-04-17 (drafted) · last updated 2026-05-11
 **Status:** Active plan; resume across sessions by checking boxes
-**References:** [CONSTRAINTS](./CONSTRAINTS-2026-04-17.md) · [TECH-STACK](./TECH-STACK-2026-04-17.md) · [ARCHITECTURE](./ARCHITECTURE-2026-04-17.md) · [DESIGN](./DESIGN-2026-04-17.md)
+**References:** [CONSTRAINTS](./CONSTRAINTS-2026-04-17.md) · [TECH-STACK](./TECH-STACK-2026-04-17.md) · [ARCHITECTURE](./ARCHITECTURE-2026-04-17.md) · [DESIGN](./DESIGN-2026-04-17.md) · [POST-MVP-PLANS](./POST-MVP-PLANS-2026-05-11.md)
+
+### Phase status snapshot (2026-05-11)
+
+| Phase | State | Tag |
+|---|---|---|
+| 0 — Scaffolding | ✅ shipped | — |
+| 1 — Walking skeleton | ✅ shipped | `walking-skeleton-green` |
+| 2 — Vault & Browse | ✅ shipped | `phase-2-complete` |
+| 3 — Sync engine | ✅ shipped | `phase-3-complete` |
+| 4 — Memory pipeline | ✅ shipped | `phase-4-complete` |
+| 5 — Chat & retrieval | ✅ shipped | `phase-5-complete` |
+| 5.5 — Conversational note ops | ✅ shipped | `phase-5.5-complete` |
+| 5.6 — Note lifecycle commands | ✅ shipped | `phase-5.6-complete` |
+| 5.7 — Chats as first-class memory | ✅ shipped | `phase-5.7-complete` |
+| 5.8 — Auto-organize + density review | ✅ shipped | `phase-5.8-complete` |
+| 6 — Attachments | ⛔ moved to POST-MVP | — |
+| 7 — Setup polish | ⛔ moved to POST-MVP | — |
+| 8 — Design pass | ✅ shipped (subset; rest deferred) | `phase-8-complete` |
+| 9 — Errors + a11y | ✅ shipped (subset; rest deferred) | `phase-9-complete` |
+| 10 — PWA & offline | ⛔ moved to POST-MVP | — |
+| 10.5 — Deterministic e2e | 🔜 placeholder; not started | — |
+| 10.7 — Architectural review | 🔜 placeholder; depends on 10.5 | — |
+| 11 — Launch prep / Cloudflare Pages | 🟡 scaffolded; deploy steps open | — |
+
+Test count at the last green check: **361 tests across 45 files**. `main` is at the tip of Phase 9 (commit `919d2a0`).
 
 ---
 
 ## Resuming in a new session
 
-1. Load the four docs above.
-2. Run `git log --oneline -20` to see recent progress.
-3. Open this file; find the first unchecked box.
+1. Load the four reference docs above + [POST-MVP-PLANS](./POST-MVP-PLANS-2026-05-11.md) for items deliberately out of the MVP critical path.
+2. Run `git log --oneline -20` to see recent progress; check `git tag --list 'phase-*'` against the snapshot above.
+3. Open this file; find the first unchecked box in an unfinished phase.
 4. If unsure, read the **Decision Log** (§10) and **Known Blockers** (§11) at the end of this doc.
 
-When you complete a task, check the box and commit. Prefer atomic commits per task group (not per task).
+When you complete a task, check the box and commit. Prefer atomic commits per task group (not per task). Tag completed phases as `phase-<n>-complete` so the snapshot above stays scannable.
 
 ## Definition of Done — every task
 
@@ -826,6 +851,11 @@ Up to now, Vitest covers pure/functional modules and UI is verified manually (Ph
     - Phase 4: write a note → embedding queued → sidecar appears → retrieval finds the chunk.
     - Phase 5: chat with retrieval cites the right note; voice input appears as a turn.
     - Phase 5.5: each slash command produces a card; Apply lands the file; chip bar reorders by frecency; `@`-mention autocomplete inserts a target; suggester promotes the right chip.
+    - Phase 5.6: `/edit` produces a replace diff; `/related` writes a See-Also section; `/find` lists results; `/archive` stamps `archived_at`; `/tag` merges tags preserving prior lines.
+    - Phase 5.7: a chat turn over the noise threshold writes a `.memory/.chats/<id>.md.json` sidecar with role-tagged chunks; `/find` surfaces the chat snippet with the 💬 glyph; Browse shows the chat under a `Chats` section and renders it read-only.
+    - Phase 5.8: a journal entry crossing the auto-organize density threshold produces `.suggestions.json` within the debounce window; daily-review banner reflects the cumulative count.
+    - Phase 8: `:focus-visible` shows the phosphor glow ring; `prefers-reduced-motion` disables animation/transition; cyan accent applied to active tab + chat caret.
+    - Phase 9: a forced sync error pushes a toast via `ToastHost`; identical messages within 30s collapse with `(×2)`; an actionable toast survives past the auto-dismiss window.
 - [ ] **CI integration.** Add `check:e2e` to the `npm run check` pipeline (or as a separate job if too slow). Tier into smoke (every PR) vs. full (nightly + pre-release) if needed.
 - [ ] **Test data hygiene.** Fixtures under `tests/fixtures/`; record-mode outputs gitignored unless explicitly committed; one canonical script for re-recording.
 
