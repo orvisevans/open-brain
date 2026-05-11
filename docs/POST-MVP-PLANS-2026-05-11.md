@@ -131,6 +131,17 @@ Filed during MVP work so ideas don't get lost. Unordered.
 - [ ] **Chip bar mobile `visualViewport` pinning + desktop hover-reveal collapse.** Today the bar uses natural flexbox layout (works on mobile; always visible on desktop). Explicit `visualViewport.offsetTop + height` pinning and a desktop hover-reveal would polish both surfaces. _Deferred from Phase 5.5._
 - [ ] **Archived-note filtering in retrieval.** Today `/archive` stamps `archived_at:` but chat retrieval still surfaces archived notes. _Deferred from Phase 5.6._
 
+### Design + a11y polish (deferred from Phases 8 & 9, 2026-05-11)
+
+- [ ] **Theme switcher UI** (System / Light / Dark) wired to `[data-theme]` and persisted to `.openbrain/config.json` so the choice syncs across devices. The CSS infrastructure already exists.
+- [ ] **Scan-line overlay** for model-download + initial-clone screens (design §7 / §11). Optional flourish; disabled by default in light mode; togglable off entirely.
+- [ ] **Command palette** (`Cmd/Ctrl+K`) — terminal-feel quick-jump. Stub-OK MVP: open notes by name. Overlaps with Phase 5.6 `/find`.
+- [ ] **Self-host Inter + JetBrains Mono** with explicit `font-feature-settings`. Today's stack falls back through system UI fonts cleanly.
+- [ ] **GitHub rate-limit status-bar countdown.** Parse `X-RateLimit-Reset`; show `◇ rate-limited, resuming in 34s` per design §9.
+- [ ] **`?debug=1` debug panel** showing recent `logError` entries. The structured-logging helper is already in place; this exposes it to users without devtools.
+- [ ] **Contrast + axe + Lighthouse a11y audits**. Run after the launch deploy lands the final color set and the production font stack. Target: AAA body, AA everywhere; Lighthouse ≥ 95.
+- [ ] **Zoom-to-200% layout verification.** Add to launch smoke checklist.
+
 ### Voice
 
 - [ ] **Whisper transcription as a privacy/accuracy mode.**

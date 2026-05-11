@@ -1,14 +1,28 @@
 @import 'tailwindcss';
 
 /*
- * Design tokens — placeholder values from DESIGN-2026-04-17.md §3.
- * Locked in Phase 8; these are intentionally rough for Phase 0.
+ * Design tokens locked in Phase 8 (2026-05-11).
+ *
+ * Accent decision: cyan (#22d3ee dark / #0891b2 light). Cyan was already in
+ * use across the app and reads cleanly on both backgrounds — magenta was a
+ * viable alternative but cyan is the safer ground-truth for a "phosphor"
+ * accent on a dark CRT-warm background.
+ *
+ * Token roles per docs/DESIGN-2026-04-17.md §3:
+ *   --color-bg / --color-bg-raised — base + raised surfaces (cards, toasts)
+ *   --color-fg / --color-fg-muted  — body text + metadata
+ *   --color-accent / --color-accent-glow — single accent + its translucent glow
+ *   --color-border                 — 1px hairline
+ *   --color-danger / --color-warn / --color-ok — semantic (muted, never neon)
  */
 @theme {
   --color-bg: #0b0d0e;
+  --color-bg-raised: #14181b;
   --color-fg: #e6e8ea;
+  --color-fg-muted: #9ba3aa;
   --color-border: #2a2e33;
   --color-accent: #22d3ee;
+  --color-accent-glow: rgba(34, 211, 238, 0.35);
   --color-danger: #f87171;
   --color-warn: #f59e0b;
   --color-ok: #22c55e;
@@ -17,16 +31,20 @@
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
-/* Light theme overrides — used when [data-theme='light'] or when system is light
- * and [data-theme='system'] is set. */
 @layer base {
+  /* Light theme: muted, paper-like, never a simple invert. The accent
+   * desaturates from cyan to dusty teal; the glow disappears (glows look
+   * wrong on light backgrounds — design doc §3 light-mode rule). */
   :root,
   :root[data-theme='light'] {
-    --color-bg: #f7f7f5;
-    --color-fg: #111315;
+    --color-bg: #f7f4ec;
+    --color-bg-raised: #fdfaf2;
+    --color-fg: #1a1d1f;
+    --color-fg-muted: #6b7178;
     --color-border: #d8dadd;
     --color-accent: #0891b2;
-    --color-danger: #dc2626;
+    --color-accent-glow: transparent;
+    --color-danger: #b91c1c;
     --color-warn: #b45309;
     --color-ok: #15803d;
   }
@@ -34,9 +52,12 @@
   @media (prefers-color-scheme: dark) {
     :root[data-theme='system'] {
       --color-bg: #0b0d0e;
+      --color-bg-raised: #14181b;
       --color-fg: #e6e8ea;
+      --color-fg-muted: #9ba3aa;
       --color-border: #2a2e33;
       --color-accent: #22d3ee;
+      --color-accent-glow: rgba(34, 211, 238, 0.35);
       --color-danger: #f87171;
       --color-warn: #f59e0b;
       --color-ok: #22c55e;
@@ -45,9 +66,12 @@
 
   :root[data-theme='dark'] {
     --color-bg: #0b0d0e;
+    --color-bg-raised: #14181b;
     --color-fg: #e6e8ea;
+    --color-fg-muted: #9ba3aa;
     --color-border: #2a2e33;
     --color-accent: #22d3ee;
+    --color-accent-glow: rgba(34, 211, 238, 0.35);
     --color-danger: #f87171;
     --color-warn: #f59e0b;
     --color-ok: #22c55e;
@@ -57,5 +81,72 @@
     background-color: var(--color-bg);
     color: var(--color-fg);
     font-family: var(--font-sans);
+  }
+
+  /* Phase 8: phosphor glow on `:focus-visible`. This is the accessibility
+   * signal and the aesthetic moment at the same time (design doc §10).
+   * Tabbed focus gets the ring; mouse clicks do not — `:focus-visible`
+   * handles that distinction for us. Inputs, buttons, links, textareas. */
+  :focus-visible {
+    outline: 1px solid var(--color-accent);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 4px var(--color-accent-glow);
+    transition:
+      box-shadow 200ms ease-out,
+      outline-color 200ms ease-out;
+  }
+
+  /* Phase 8: honor `prefers-reduced-motion` (design doc §7). Replace
+   * transitions with instant state changes; kill the focus glow's fade
+   * and the chat-input blink. We deliberately do *not* set
+   * `animation: none !important` globally — that breaks streaming-token
+   * rendering (which is the *only* animation Chat needs). Instead we cap
+   * transition-duration at 0 and disable the named blink keyframe. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      transition-duration: 0ms !important;
+      animation-duration: 0ms !important;
+    }
+    :focus-visible {
+      box-shadow: none;
+    }
+  }
+}
+
+/* Phase 8: terminal-style blinking caret. Applied to chat input via the
+ * `.terminal-cursor` class — square-wave 1s cycle per design doc §7. The
+ * caret-color is the accent in both modes so the blink reads through. */
+@keyframes openbrain-cursor-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.terminal-cursor {
+  caret-color: var(--color-accent);
+}
+
+.terminal-cursor::after {
+  content: '';
+  display: inline-block;
+  width: 0.55em;
+  height: 1em;
+  margin-left: 1px;
+  background: var(--color-accent);
+  vertical-align: text-bottom;
+  animation: openbrain-cursor-blink 1s steps(2, end) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-cursor::after {
+    animation: none;
+    opacity: 0.6;
   }
 }

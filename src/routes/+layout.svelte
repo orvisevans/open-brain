@@ -8,6 +8,7 @@
   import { auth, model, network, repo } from '$lib/state.svelte';
   import { syncEngine, type SyncStatus } from '$lib/sync';
   import { getStoredRepo } from '$lib/sync/repo-storage';
+  import { ToastHost, toasts } from '$lib/toast';
   import '../app.css';
 
   const rawClientId: unknown = import.meta.env['VITE_GITHUB_CLIENT_ID'];
@@ -108,8 +109,21 @@
   // programmatically.
   let syncStatus = $state<SyncStatus>(filterSidecarConflicts(syncEngine.status.value));
   $effect(() => {
+    let previousKind = syncStatus.kind;
     return syncEngine.subscribe((next) => {
-      syncStatus = filterSidecarConflicts(next);
+      const filtered = filterSidecarConflicts(next);
+      // Phase 9: surface a sync-error transition once via toast. Status-bar
+      // text stays as the live indicator; the toast is for the moment the
+      // failure happens (a user might miss a quiet color change in the
+      // footer). Collapse-on-duplicate is handled by the store.
+      if (filtered.kind === 'error' && previousKind !== 'error') {
+        toasts.show({
+          message: `Sync failed: ${filtered.message}`,
+          severity: 'error',
+        });
+      }
+      previousKind = filtered.kind;
+      syncStatus = filtered;
     });
   });
 
@@ -209,9 +223,11 @@
     {@render children?.()}
   </main>
 
+  <ToastHost />
+
   <footer class="status-bar" aria-label="App status">
     <span class="status-auth">{auth.user ?? 'not signed in'}</span>
-    <span class="status-model">{modelStatus}</span>
+    <span class="status-model" aria-live="polite">{modelStatus}</span>
     {#if syncStatus.kind === 'conflict' && syncStatus.paths[0] !== undefined}
       <a
         class="status-sync sync-error sync-link"

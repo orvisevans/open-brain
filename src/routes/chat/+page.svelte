@@ -856,6 +856,7 @@
       />
       <div class="input-row">
         <textarea
+          class="terminal-cursor"
           rows={3}
           placeholder={model.loaded
             ? 'Ask anything about your notes… (Enter to send)'
