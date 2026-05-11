@@ -1,0 +1,29 @@
+# Cloudflare Pages _headers — applied to responses for the matching paths.
+# https://developers.cloudflare.com/pages/configuration/headers/
+#
+# Strategy:
+#   - Hashed assets under /_app/immutable/ — long cache, immutable.
+#   - HTML shells — short cache so deploys propagate fast.
+#   - WebLLM needs `wasm-unsafe-eval` for its worker. Web Speech, WebGPU,
+#     and OPFS are same-origin only. No third-party scripts.
+
+/_app/immutable/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/*.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+/
+  Cache-Control: public, max-age=0, must-revalidate
+
+# Permissions: only enable what we actually need (Web Speech, mic). Block the
+# rest to make supply-chain attacks measurably worse to exploit.
+/*
+  Permissions-Policy: microphone=(self), camera=(), geolocation=(), payment=()
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  # CSP carved out for WebLLM (wasm-unsafe-eval) and Worker blobs. No
+  # third-party scripts are loaded — keep `script-src` to self + the wasm
+  # eval, no `unsafe-inline`.
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https:; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'

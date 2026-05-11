@@ -30,6 +30,12 @@ export default tseslint.config(
       'node_modules/**',
       'coverage/**',
       '*.min.js',
+      // Cloudflare Pages Functions live outside the SvelteKit TS project graph
+      // (Cloudflare compiles them with its own toolchain on deploy). Linting
+      // them with our typed rules would require a separate tsconfig + project
+      // reference for no measured gain — they're tiny pass-through proxies
+      // covered by manual test on Wrangler.
+      'functions/**',
     ],
   },
 

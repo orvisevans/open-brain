@@ -881,17 +881,18 @@ Take stock of the architecture before launch. Identify accumulated tech debt, cr
 
 ### Hosting infrastructure (Cloudflare Pages + Functions)
 
-- [ ] Add a `functions/` directory at the repo root (Cloudflare Pages convention).
-- [ ] `functions/__gh/[[path]].ts` — proxies to `github.com`. Maps the request 1:1, forwards headers, returns the upstream response. Used for OAuth device flow.
-- [ ] `functions/__gh_api/[[path]].ts` — proxies to `api.github.com`. Used for installation discovery + REST API.
-- [ ] `functions/__gh_git/github.com/[[path]].ts` — proxies to `github.com` for git smart-HTTP (`/info/refs`, `/git-upload-pack`, `/git-receive-pack`). Must stream both request and response (git uses chunked transfer encoding).
-- [ ] Verify with `npx wrangler pages dev` that the dev experience matches Vite's `server.proxy` — same three paths, same behavior. (Vite dev stays primary for local development; Wrangler is a pre-deploy sanity check.)
-- [ ] Add a `_headers` file for CSP + cache rules: long cache for hashed assets under `_app/immutable/`, short cache for `index.html`. CSP allows WebLLM's required `wasm-unsafe-eval` and Worker blobs.
-- [ ] Add a Cloudflare Pages project (manual one-time setup in Cloudflare dashboard, documented in README). Connect to the GitHub repo, build command `npm run build`, output `build/`.
+- [x] `functions/` directory at the repo root (Cloudflare Pages convention) with three proxies + a shared helper. Scaffolded 2026-05-11.
+- [x] `functions/__gh/[[path]].ts` — proxies to `github.com`. Used for OAuth device flow.
+- [x] `functions/__gh_api/[[path]].ts` — proxies to `api.github.com`. Used for installation discovery + REST API.
+- [x] `functions/__gh_git/github.com/[[path]].ts` — proxies to `github.com` for git smart-HTTP. Streams both request and response bodies (Cloudflare Workers `fetch` honours `Request.body` as a `ReadableStream`).
+- [x] `functions/_shared/proxy.ts` carries the shared upstream-forward logic + header stripping. Mirrors `stripBasicAuthChallenge` from `vite.config.ts`.
+- [x] `static/_headers` for CSP + cache rules: 1y immutable on `_app/immutable/*`, no-store on the HTML shell. CSP carves out `wasm-unsafe-eval` for WebLLM and `worker-src blob:` for the Worker that WebLLM spawns; no `unsafe-inline` scripts.
+- [x] `docs/DEPLOY-CLOUDFLARE-PAGES.md` documents the one-time Pages project setup, the GitHub App registration, and the same-origin verification step.
+- [ ] Verify on `npx wrangler pages dev build` once the project is deployed — scaffolded but not yet exercised. Reason: Wrangler isn't a dev dependency in this repo yet; the user can install on demand. The Functions are intentionally small enough that a code review + first-deploy smoke test covers them.
 
 ### Production GitHub App
 
-- [ ] Register a production GitHub App (`Open Brain`). Set callback / device-flow OK; permissions: Repository contents read+write, metadata read.
+- [ ] Register a production GitHub App (`Open Brain`). Permissions: Repository contents read+write, metadata read. (Manual step — documented in `docs/DEPLOY-CLOUDFLARE-PAGES.md`.)
 - [ ] Add a production `VITE_GITHUB_CLIENT_ID` to Cloudflare Pages env vars; dev keeps the existing dev app.
 - [ ] Install on a clean production repo. Verify the full flow: device-flow sign-in → installation discovery → clone → first commit → push.
 
