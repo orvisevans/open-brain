@@ -108,21 +108,31 @@
   // sidecar conflict resolver (started via `bootstrapMemory`) handles them
   // programmatically.
   let syncStatus = $state<SyncStatus>(filterSidecarConflicts(syncEngine.status.value));
+  // Phase 9: track previous sync-status kind in a plain (non-reactive)
+  // variable so the toast effect doesn't take a reactive dependency on
+  // `syncStatus`. Reading `$state` inside the `$effect` body would make
+  // the effect re-run on every status write — the effect's subscribe
+  // call then fires synchronously with the current value and writes
+  // again, creating an effect_update_depth_exceeded loop that kills
+  // the whole layout (including unrelated routes like /setup's
+  // device-code display). We initialise from the engine's raw value
+  // rather than the `$state` rune so we don't trip the linter's
+  // state-referenced-locally check either.
+  let previousSyncKind: SyncStatus['kind'] = filterSidecarConflicts(syncEngine.status.value).kind;
   $effect(() => {
-    let previousKind = syncStatus.kind;
     return syncEngine.subscribe((next) => {
       const filtered = filterSidecarConflicts(next);
-      // Phase 9: surface a sync-error transition once via toast. Status-bar
-      // text stays as the live indicator; the toast is for the moment the
+      // Surface a sync-error transition once via toast. Status-bar text
+      // stays as the live indicator; the toast is for the moment the
       // failure happens (a user might miss a quiet color change in the
       // footer). Collapse-on-duplicate is handled by the store.
-      if (filtered.kind === 'error' && previousKind !== 'error') {
+      if (filtered.kind === 'error' && previousSyncKind !== 'error') {
         toasts.show({
           message: `Sync failed: ${filtered.message}`,
           severity: 'error',
         });
       }
-      previousKind = filtered.kind;
+      previousSyncKind = filtered.kind;
       syncStatus = filtered;
     });
   });
