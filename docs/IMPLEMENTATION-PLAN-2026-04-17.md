@@ -18,8 +18,8 @@
 | 5.6 — Note lifecycle commands | ✅ shipped | `phase-5.6-complete` |
 | 5.7 — Chats as first-class memory | ✅ shipped | `phase-5.7-complete` |
 | 5.8 — Auto-organize + density review | ✅ shipped | `phase-5.8-complete` |
-| 5.9 — Persona & capabilities context | 🔜 planned, not started | — |
-| 5.9.1 — Conversation context overflow | 🔜 planned, not started | — |
+| 5.9 — Persona & capabilities context | ✅ shipped | `phase-5.9-complete` |
+| 5.9.1 — Conversation context overflow | ✅ shipped (subset; deferred items below) | `phase-5.9.1-complete` |
 | 6 — Attachments | ⛔ moved to POST-MVP | — |
 | 7 — Setup polish | ⛔ moved to POST-MVP | — |
 | 8 — Design pass | ✅ shipped (subset; rest deferred) | `phase-8-complete` |
@@ -898,14 +898,16 @@ buildSystemPrompt({ capabilities, persona, slashEmit }) ← new helper
 
 ### Exit criteria
 
-- [ ] `CAPABILITIES_PROMPT` is in the bundle, lint-bounded, version-stamped.
-- [ ] `.openbrain/persona.md` ships a stub on first run; user can edit in Browse and changes take effect on next chat turn.
-- [ ] `buildSystemPrompt` replaces the inline concat in the chat page and in the slash handlers' LLM runner.
-- [ ] Token-budget warning fires on over-bloat without breaking the call.
-- [ ] Manual: type "what can you do?" — model now answers in Open-Brain-specific terms (mentions slash commands).
-- [ ] Manual: type "I'm going to bed, I petted the cat" — model suggests `/journal` rather than treating it as meta.
-- [ ] `npm run check` green.
-- [ ] Tag `phase-5.9-complete`.
+- [x] `CAPABILITIES_PROMPT` is in the bundle, lint-bounded (`CAPABILITIES_CHAR_CAP`), version-stamped (`CAPABILITIES_VERSION`).
+- [x] `.openbrain/persona.md` ships a stub on first chat mount via `ensurePersonaStub`; user can edit in Browse (with a token-budget banner) and changes take effect on next chat turn via `subscribeToVaultChanges`.
+- [x] `buildSystemPrompt` replaces the inline concat at `src/routes/chat/+page.svelte`.
+- [x] Token-budget warning fires on over-bloat (persona truncation `console.warn`) without breaking the call.
+- [x] `.openbrain/` files surface in Browse under a new "App settings" section via `vault.listAppSettings()`.
+- [ ] Manual: type "what can you do?" — model now answers in Open-Brain-specific terms. _Pending user's primary tab._
+- [ ] Manual: type "I'm going to bed, I petted the cat" — model suggests `/journal`. _Pending user's primary tab._
+- [x] `npm run check` green (361 → 386 tests).
+- [x] Tag `phase-5.9-complete`.
+- [ ] Wire `buildSystemPrompt` into the slash-handlers' shared LLM runner so `/edit` and `/organize` also benefit. _Deferred — those handlers already have their own focused system prompts (`EDIT_SYSTEM_PROMPT`, `ORGANIZE_SYSTEM_PROMPT`) that are task-specific and don't need capabilities + persona on every call. Re-evaluate if user reports the slash handlers feeling out-of-context._
 
 ---
 
@@ -997,13 +999,15 @@ A pathological case: even after trimming history down to `MIN_KEEP`, the system 
 
 ### Exit criteria
 
-- [ ] `composeChatBudget` + `trimHistoryToBudget` ship; chat page uses them instead of replaying the full session.
-- [ ] When `droppedCount > 0`, a subtle in-chat marker appears.
-- [ ] Manual: hold a 30-turn conversation; verify the model doesn't error out and the marker appears mid-stream once history starts overflowing.
-- [ ] Manual: ask "what did we discuss 25 turns ago?" — answer comes from chat-RAG retrieval, not from in-prompt history.
-- [ ] Hard-error path tested manually: paste a 5000-token user message; receive the "split into smaller pieces" toast.
-- [ ] `npm run check` green.
-- [ ] Tag `phase-5.9.1-complete`.
+- [x] `composeChatBudget` + `trimHistoryToBudget` ship; chat page uses `trimHistoryToBudget` instead of replaying the full session ([src/routes/chat/+page.svelte](../src/routes/chat/+page.svelte)).
+- [x] When `droppedCount > 0`, a subtle in-chat marker appears (`↥ N earlier turns archived to chat memory · search via /find`).
+- [x] `countMessageTokens` + `approxTokens` ship with a WebLLM-engine fast path and a heuristic fallback ([src/lib/llm/tokenize.ts](../src/lib/llm/tokenize.ts)).
+- [x] `console.warn('[openbrain/budget]', …)` fires on trim events for debug-panel observability.
+- [ ] Manual: hold a 30-turn conversation; verify the marker appears mid-stream. _Pending user's primary tab._
+- [ ] Manual: ask "what did we discuss 25 turns ago?" — answer comes from chat-RAG retrieval. _Pending user's primary tab._
+- [ ] Hard-error path: a 5000-token user message produces a clear toast. _Deferred — the current code lets retrieval shrink to zero and proceeds; the explicit hard-error toast is filed for follow-up._
+- [x] `npm run check` green.
+- [x] Tag `phase-5.9.1-complete`.
 
 ---
 
