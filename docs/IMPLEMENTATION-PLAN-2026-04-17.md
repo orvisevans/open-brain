@@ -615,45 +615,120 @@ Phase 5.5 made chat a **capture** surface. Phase 5.6 extends it to cover the res
 
 ---
 
-## Phase 6 — Attachments
+## Phase 5.7 — Chats as first-class memory
 
-- [ ] `AttachmentStore` interface per architecture §6
-- [ ] `GitHubRepoAttachments` impl: reads/writes under `attachments/`
-- [ ] Drag-and-drop on the editor → stores blob → inserts Markdown image/link
-- [ ] Attachments sync as part of the normal commit flow
+> Inserted 2026-05-11 after Phase 5.6. Foundation for conversational capture: every chat turn becomes embedded, retrievable, and visible in Browse — without changing the chat UX. Rationale in this session's preamble; the short version: chats are already saved to `.chats/<id>.md` and synced via git, but explicitly filtered out of the embedding pipeline, so years of thinking are invisible to retrieval. This phase removes that blindness.
+
+### Direction
+
+Treat chats as the primary capture surface; treat `notes/` / `journal/` / `lists/` as curated structure over capture. Embedding flows over chats with role-aware chunking; retrieval surfaces both notes and chats with notes weighted higher. Browse exposes a Chats section so users can read their past conversations like any other markdown.
+
+This is foundation, not UX revolution. No new slash commands. No router change. The conversational *feel* improvements (auto-organize on chats, proactive connections, capture-by-default routing) sit on top in Phase 5.8 and beyond.
+
+### Vault changes (`src/lib/vault/`)
+
+- [ ] Document the existing `.chats/` convention in vault types/comments: per-session markdown with frontmatter + `## role · timestamp` blocks. Format already exists in `src/lib/chat/format.ts`.
+- [ ] Decide and implement: extend `Vault.listNotes()` to optionally accept an `includeChats` flag, OR add a sibling `Vault.listChats(): Promise<NotePath[]>`. Prefer the latter — keeps the existing notes-only callers untouched and surfaces a clear intent at call sites.
+- [ ] Implementation walks `.chats/` under `repoDirectory`. Same `walk()` helper. Returns repo-relative paths.
+- [ ] Tests: `listChats()` returns empty when dir missing; sorted; markdown-only.
+
+### Memory pipeline (`src/lib/memory/`)
+
+- [ ] **Drop the `.chats/` filter in `notifyMemoryOfChange`** (`src/lib/memory/index.ts:170`). Keep the `.memory/` filter (avoids loops) and the `.openbrain/` filter. Add a new branch for chat paths that routes to a chat-specific extractor instead of the standard markdown chunker.
+- [ ] **Role-aware chat chunker** (`src/lib/memory/chat-chunker.ts`): parse a chat session via the existing `parseSession` from `src/lib/chat/format.ts`; produce one chunk per substantive message; each chunk carries `role: 'user' | 'assistant' | 'system'`, `messageIndex`, and `timestamp`.
+- [ ] **Noise filters in the chunker:** drop messages with `< 40` characters of non-whitespace content, drop messages that are pure-emoji or pure-punctuation. Configurable threshold; default conservative.
+- [ ] **Sidecar format extension** (`src/lib/memory/sidecar-format.ts`): each embedding chunk gains optional `role`, `messageIndex`, `timestamp` fields. Schema version bumped; tolerant parser preserves unknown fields and accepts sidecars without these fields (back-compat for note sidecars).
+- [ ] **Extraction skip-LLM for chat sources:** the existing `extraction-queue.ts` runs an LLM extract pass for `summary` / `entities`. For chats, skip that pass — chats are conversational, not noteworthy of summary extraction, and we want them embedded fast. Embedding-only run.
+- [ ] Tests: chat chunker on fixtures (multi-message session, short-message filter, emoji-only filter, missing-frontmatter), sidecar round-trip with role fields, queue routes chat paths to chat extractor.
+
+### Retrieval (`src/lib/memory/retrieve.ts`)
+
+- [ ] **Retrieval iterates chats alongside notes.** Add a second pass over `vault.listChats()` (read sidecars same as notes). `RetrievalVault` gains an optional `listChats?: () => Promise<NotePath[]>`; absent → behaves as today.
+- [ ] **Source-aware scoring.** Multiply chat-chunk scores by a configurable `chatWeight` (default `0.7`) before ranking. Tuning point: keep notes preferred when both contain the answer.
+- [ ] **Default role filter.** Retrieval options gain `includeAssistantTurns?: boolean` (default `false`). Avoids the model citing itself.
+- [ ] `RetrievedChunk` gains optional `role` and `source: 'note' | 'chat'` (derived from notePath prefix). Tests for both source types and the assistant-turn filter.
+- [ ] `/find` handler surfaces the source — render chat hits as `💬 .chats/<id> · user · "<snippet>"`. Update `src/lib/chat/slash/handlers/find.ts`.
+
+### Browse tab (`src/routes/browse/`)
+
+- [ ] Sidebar gets a **Chats** section below Notes. Reuses `FileTree` with a different `roots` prop or a sibling tree. Loads via `vault.listChats()`.
+- [ ] Click a chat → navigate `/browse/.chats/<id>.md`. Existing `[...path]` route already handles the read.
+- [ ] Render mode: chats are markdown-readable as-is (the `## role · timestamp` blocks render fine), but the CodeMirror editor treats them as editable. **Render chats as read-only** by default — they're history. Add a small banner "read-only · chat session · open in /chat to continue".
+- [ ] Empty-state copy when no chats exist yet.
+- [ ] Tests for the chat-source branch in `tree.ts` if needed; otherwise validate via manual browse.
+
+### Configuration knobs
+
+- [ ] `MEMORY_CHAT_MIN_CHARS` (default `40`) and `MEMORY_CHAT_INCLUDE_ROLES` (default `['user', 'assistant']`, with assistant turns filtered out of retrieval by default but still embedded so the user can opt in via `/find --include-assistant`).
+- [ ] `RETRIEVAL_CHAT_WEIGHT` (default `0.7`).
+
+### Testing
+
+- [ ] Unit: chat chunker, role-aware sidecar round-trip, retrieval with mixed sources, source weighting, assistant-turn exclusion, `vault.listChats`.
+- [ ] Manual: chat a few turns; verify `.memory/.chats/<id>.json` appears; reload; `/find <topic>` surfaces the chat snippet; Browse shows the chat under a Chats section and renders it.
 
 ### Exit criteria
-- [ ] Attaching a file from any tab works; it ends up in `attachments/` and renders when referenced in a note.
-- [ ] `npm run check` green
-- [ ] Review Phase 7's setup flow; add/remove steps based on real first-run behavior of the features you've built
+
+- [ ] Chats are embedded and retrievable; `/find` surfaces them; weights keep notes preferred when both exist.
+- [ ] Browse tab lists chats and renders them readably.
+- [ ] No regression in note retrieval — existing `/find` / chat-RAG behavior unchanged on note-only vaults.
+- [ ] `npm run check` green.
+- [ ] Tag `phase-5.7-complete`.
 
 ---
 
-## Phase 7 — First-run setup & compat
+## Phase 5.8 — Auto-organize and proactive connections
 
-### Compat detection (`src/lib/compat/`)
-- [ ] Detect WebGPU, Web Speech API, IndexedDB/OPFS availability, rough VRAM
-- [ ] `getCapabilities()` returns a typed struct
+> Inserted 2026-05-11. Closes the conversational loop on top of Phase 5.7's foundation. Captures get organized in the background; new captures surface connections to prior thinking automatically.
 
-### Setup flow
-- [ ] `/setup` becomes a multi-step flow:
-    1. Compatibility matrix (✅/⚠️/❌ per feature on current browser)
-    2. Sign in with GitHub
-    3. Pick existing private repo OR create new one (`gh`-style name input)
-    4. First clone (progress)
-    5. Pick Gemma variant (skip if no WebGPU; user can use the app without Chat)
-    6. Initial model download
-    7. "You're set up" → redirect to `/chat`
-- [ ] If auth/repo already set, `/` redirects straight to `/chat`
+### Direction
 
-### Browser compatibility page
-- [ ] Standalone `/compat` route with the full matrix + guidance for each browser
-- [ ] Linked from error states when a feature is unavailable
+Today `/organize @path` is manual: the user types it, the LLM extracts, proposals appear, the user accepts. Phase 5.8 makes that happen automatically as a background pass over substantive content (journal entries crossing a threshold, chat sessions where the user said meaningful things). Daily review surfaces the cumulative suggestions instead of nagging per-note. Captures gain a "related thinking" panel that retrieves similar past notes + chats so connections form at write time.
+
+### Background organize queue (`src/lib/memory/`)
+
+- [ ] Promote the deferred `'organize'` extraction job type (post-MVP backlog → here). New job kind sits beside `'embed'` in `extraction-queue.ts`.
+- [ ] Triggers:
+    - Journal note crosses ~`200` chars of new content since last organize (hash-based check).
+    - Chat session crosses ~`5` substantive user messages since last organize.
+- [ ] Job calls the existing `organize.ts` LLM pipeline; writes a `.suggestions.json` sidecar; respects `GpuLease` (chat / RAG always wins over background organize).
+- [ ] Single-flight per path; `whenIdle()` for tests.
+
+### Daily-review fires on density, not just time
+
+- [ ] `daily-review.ts` gains a "stale suggestion count" signal: how many `.suggestions.json` entries exist that haven't been accepted/dismissed since last review.
+- [ ] Banner copy: "You captured N items across journal + chats yesterday — review?" Same `/organize` flow; the command now accepts batched paths or a date range.
+- [ ] Suggestion sidecars carry `acked_at` / `dismissed_at` so review state survives across days.
+
+### Proactive connections at capture time
+
+- [ ] When a proposal card is rendered for `/journal` or `/note`, kick off a background retrieval (k=3) against existing memory. When ready, append a `## Related` section to the card with one-line previews + `[[wikilink]]` chips.
+- [ ] Applying the proposal with `Apply with backlinks` writes the links into the new note's body; `Apply` without writes none.
+- [ ] Avoid blocking the card render — links are best-effort and arrive after.
+
+### Chat-aware extractions
+
+- [ ] `/organize` accepts a chat path (`/organize @.chats/<id>.md`) and extracts atomic notes from the conversation. Existing handler already takes any path; the LLM prompt may need a "conversation mode" tweak that focuses on user turns and ignores assistant scaffolding.
+
+### Testing
+
+- [ ] Unit: organize-job dispatch, density trigger thresholds, related-retrieval helper, daily-review density signal, chat-source organize prompt.
+- [ ] Manual: capture a journal entry; observe `.suggestions.json` appearing in `.memory/`; reload chat; verify Related links surface on the next capture proposal.
 
 ### Exit criteria
-- [ ] A fresh user on a clean browser can complete the setup flow end-to-end.
-- [ ] `npm run check` green
-- [ ] Review Phase 8's design pass against the UI you've actually built; prune tasks that no longer apply, add any that emerged
+
+- [ ] Captures crossing the threshold spawn background organize jobs that produce suggestion sidecars without user action.
+- [ ] Daily review reflects the cumulative suggestion count, not a single-note prompt.
+- [ ] Proposal cards for new captures surface related-content chips.
+- [ ] `/organize @.chats/<id>` produces sensible atomic-note proposals.
+- [ ] `npm run check` green.
+- [ ] Tag `phase-5.8-complete`.
+
+---
+
+## Phases 6 & 7 — moved to POST-MVP-PLANS
+
+2026-05-11: Phase 6 (Attachments) and Phase 7 (First-run setup polish + compat detection) were moved to [POST-MVP-PLANS-2026-05-11.md](./POST-MVP-PLANS-2026-05-11.md). The MVP critical path runs Phase 5.6 → Phase 8 directly. The production GitHub App swap and serverless proxy port from the old Phase 7 stay on the MVP critical path — they live in Phase 11.
 
 ---
 
@@ -707,22 +782,13 @@ Run against [DESIGN](./DESIGN-2026-04-17.md). This is a pass, not a rebuild.
 ### Exit criteria
 - [ ] Every error path has been exercised manually at least once.
 - [ ] `npm run check` green
-- [ ] Review Phase 10's PWA tasks against what's now wired up; caching strategy may need tweaks based on actual asset sizes
+- [ ] Review Phase 10.5's e2e scope against what's now wired up
 
 ---
 
-## Phase 10 — PWA & offline
+## Phase 10 — moved to POST-MVP-PLANS
 
-- [ ] Install `@vite-pwa/sveltekit`; configure manifest (name, icons, theme color, standalone)
-- [ ] App shell precached via Workbox
-- [ ] All routes render offline (compat page shows clear "offline" state when GitHub is unreachable)
-- [ ] Lighthouse PWA audit passes
-- [ ] Test: airplane mode → app still loads → Chat works → Browse works → sync queues changes → come back online → sync flushes
-
-### Exit criteria
-- [ ] App installs as PWA on mobile and desktop; offline-first experience feels seamless.
-- [ ] `npm run check` green
-- [ ] Review Phase 11's launch prep; add browser-specific gotchas discovered during PWA work
+2026-05-11: Full PWA + offline-first was moved to [POST-MVP-PLANS-2026-05-11.md](./POST-MVP-PLANS-2026-05-11.md). The product vision is "just visit a URL — no installs"; PWA install is optional. A minimal `manifest.json` for "Add to Home Screen" on mobile remains on the MVP critical path and ships in Phase 11.
 
 ---
 
@@ -805,20 +871,51 @@ Take stock of the architecture before launch. Identify accumulated tech debt, cr
 
 ---
 
-## Phase 11 — Launch prep
+## Phase 11 — Launch prep & hosting on Cloudflare Pages
 
-- [ ] Manual smoke test on each supported browser per `compat` matrix — capture which features work where
-- [ ] Security: CSP headers configured (no inline scripts except WebLLM's required worker blob); no third-party JS in network panel
-- [ ] Performance: measure time-to-first-token and initial-clone time for a 100-note repo; document baseline
-- [ ] README: full user-facing getting-started
-- [ ] `CONTRIBUTING.md` (optional for MVP)
-- [ ] Register production GitHub App; swap `VITE_GITHUB_CLIENT_ID` from dev to prod. Install on a production repo to verify the installation-discovery flow works end-to-end.
-- [ ] **Port the three same-origin proxies to the production host.** Dev uses Vite's `server.proxy` config; production needs serverless functions (Cloudflare Pages Functions or equivalent) at the same three paths: `/__gh/*` → `github.com/*`, `/__gh_api/*` → `api.github.com/*`, `/__gh_git/github.com/*` → `github.com/*`. No code in `src/` should need to change — the path prefixes are already in place. Verify via DevTools that every GitHub-bound request in production is same-origin.
-- [ ] Tag `v0.1.0-mvp` and deploy to production URL
+> Hosting decision (2026-05-11): **Cloudflare Pages**, not GitHub Pages. GitHub Pages is static-only and cannot satisfy the three same-origin proxies (`/__gh`, `/__gh_api`, `/__gh_git`) that the GitHub-auth + git-clone path requires. Cloudflare Pages is static + Functions on the same origin, free tier covers personal use, push-to-deploy from the same GitHub repo. The user-facing experience stays "no installs, just visit a URL"; behind the scenes the same-origin proxies become Cloudflare Pages Functions.
+>
+> Alternatives considered: Netlify (functions are paid past 125K/mo), Vercel (similar tier), a small Cloudflare Worker fronting the static site (more moving parts). Cloudflare Pages is the smallest delta.
+
+### Hosting infrastructure (Cloudflare Pages + Functions)
+
+- [ ] Add a `functions/` directory at the repo root (Cloudflare Pages convention).
+- [ ] `functions/__gh/[[path]].ts` — proxies to `github.com`. Maps the request 1:1, forwards headers, returns the upstream response. Used for OAuth device flow.
+- [ ] `functions/__gh_api/[[path]].ts` — proxies to `api.github.com`. Used for installation discovery + REST API.
+- [ ] `functions/__gh_git/github.com/[[path]].ts` — proxies to `github.com` for git smart-HTTP (`/info/refs`, `/git-upload-pack`, `/git-receive-pack`). Must stream both request and response (git uses chunked transfer encoding).
+- [ ] Verify with `npx wrangler pages dev` that the dev experience matches Vite's `server.proxy` — same three paths, same behavior. (Vite dev stays primary for local development; Wrangler is a pre-deploy sanity check.)
+- [ ] Add a `_headers` file for CSP + cache rules: long cache for hashed assets under `_app/immutable/`, short cache for `index.html`. CSP allows WebLLM's required `wasm-unsafe-eval` and Worker blobs.
+- [ ] Add a Cloudflare Pages project (manual one-time setup in Cloudflare dashboard, documented in README). Connect to the GitHub repo, build command `npm run build`, output `build/`.
+
+### Production GitHub App
+
+- [ ] Register a production GitHub App (`Open Brain`). Set callback / device-flow OK; permissions: Repository contents read+write, metadata read.
+- [ ] Add a production `VITE_GITHUB_CLIENT_ID` to Cloudflare Pages env vars; dev keeps the existing dev app.
+- [ ] Install on a clean production repo. Verify the full flow: device-flow sign-in → installation discovery → clone → first commit → push.
+
+### Mobile shell
+
+- [ ] Minimal `manifest.json` for "Add to Home Screen" (name, icons at 192/512, theme color, `display: standalone`). Carved out from the post-MVP PWA work — this is the cheapest mobile-shell win that doesn't gate on the full Workbox investment.
+- [ ] Apple touch icon + favicon set.
+
+### Smoke + perf + content
+
+- [ ] Manual smoke test on each supported browser — capture which features work where. Output: a short table appended to README or a `docs/COMPAT.md`.
+- [ ] CSP headers configured via `_headers` (no inline scripts except WebLLM's required worker blob); no third-party JS in network panel.
+- [ ] Performance: measure time-to-first-token and initial-clone time for a 100-note repo; document baseline.
+- [ ] README: full user-facing getting-started — "fork or visit, sign in with GitHub, pick a private repo, start typing."
+- [ ] `CONTRIBUTING.md` (optional for MVP).
+
+### Release
+
+- [ ] Tag `v0.1.0-mvp`.
+- [ ] Cloudflare Pages deploys from `main` automatically on tag push.
+- [ ] Verify same-origin: every GitHub-bound request in DevTools network panel shows the deployed origin, not `github.com` directly.
 
 ### Exit criteria
 - [ ] `npm run check` green
-- [ ] MVP is live, reachable, and actually usable as a personal second brain.
+- [ ] MVP is live at the Cloudflare Pages URL and actually usable as a personal second brain.
+- [ ] A fresh user on a clean browser completes setup end-to-end via the deployed URL — no localhost, no shell.
 
 ---
 
@@ -909,6 +1006,7 @@ Record non-obvious decisions made during implementation that future sessions sho
   KV-cache spike (~5 min, web-llm source + multi-round-chat example): WebLLM auto-reuses KV cache when `messages` is a strict prefix-extension of the previous call within the same engine session. The cache is single-track per engine — a different-system-prompt classifier interleaved between chat turns would bust the cache for both. This is the strongest reason the intent classifier stays embedding-based (no LLM call). No further KV-cache spike planned.
 
   JSON-vs-slash precheck (~15 min, web-llm repo + docs): WebLLM exposes `response_format: { type: 'json_object' }` with grammar constraints, and ships dedicated `examples/json-mode` + `examples/json-schema`. Official example uses Llama-3.2-3B, not Gemma; "most models support grammar" is not "all". No open WebLLM issues against Gemma + JSON (neutral signal). Bench is **valid and worth running** — saved for a dedicated session, full design in research §6.
+- `2026-05-11` — **Plan triage: Phase 6, Phase 7, Phase 10, §12, §13 moved to [POST-MVP-PLANS-2026-05-11.md](./POST-MVP-PLANS-2026-05-11.md).** Reason: Phases 5.5 and 5.6 reshaped the product around conversational capture; the MVP definition is now "browser-only personal second brain with private GitHub-backed sync and conversational capture." Attachments (Phase 6), multi-step setup polish (Phase 7), and full PWA + offline-first (Phase 10) are not part of that definition. The production GitHub App swap and serverless proxy port that originally hid inside Phase 7 stay on the critical path — they're already filed in Phase 11. A minimal manifest.json for mobile "Add to Home Screen" remains in Phase 11 too. Phase numbers were left stable rather than renumbered to preserve back-references in this log.
 
 ---
 
@@ -920,40 +1018,6 @@ Track things that might require a plan revision.
 
 ---
 
-## 12. Out of scope for MVP
+## 12 & 13. Out-of-scope + backlog — moved to POST-MVP-PLANS
 
-Already covered in [CONSTRAINTS §11](./CONSTRAINTS-2026-04-17.md), restated so this plan is self-contained:
-
-- Real-time collaboration
-- Server-side AI
-- Non-GitHub auth
-- Native mobile apps
-- Plugin system
-- Rich markdown rendering
-- Voice output (TTS)
-- AAAK / lossy compression
-- User-selectable embedding model
-- External attachment storage (Dropbox, S3)
-
----
-
-## 13. Post-MVP backlog (unordered)
-
-Filed here so ideas that surface during MVP work don't get lost.
-
-- [ ] Tier 3 conflict auto-recovery (write `<path>.conflict-<ISO>.md` backup, reset workdir to remote, replay). Deferred from Phase 3 because the destructive reset/replay needs browser-level testing on a real `MergeNotSupportedError`. See §10 2026-05-05 Phase 3 entry.
-- [ ] Tier 2 resolution should produce a true merge commit (parents: HEAD + MERGE_HEAD) instead of a single-parent commit. Currently relies on the push-rejection auto-recovery loop to converge — works but inefficient and may produce more conflict iterations than necessary. See §10 2026-05-09 #9.
-- [ ] Whisper transcription as a privacy/accuracy mode
-- [ ] **Full conversational voice mode.** Continuous listening (re-arm mic after each AI turn), voice-activity detection / end-of-turn detection, interrupt handling (abort TTS + LLM stream when user speaks over the AI), and prompt tuning so responses are short enough for voice. Phase 5.5 ships the basic TTS toggle for one-shot speak-the-reply; this is the deeper "talk to it like a person" mode. Estimate: 2–3 days minimum, plus ongoing tuning since users will benchmark against ChatGPT Voice / Siri.
-- [ ] Rich markdown preview
-- [ ] External attachment storage via `AttachmentStore` abstraction
-- [ ] AAAK render-at-retrieval experiment (only if vault size demands)
-- [ ] Plugin system
-- [ ] Graph view / backlinks panel
-- [ ] WebAuthn-encrypted token storage
-- [ ] **Phase 5.5 deferred — background organize queue.** Add an `'organize'` job kind to the extraction queue so suggestion sidecars get auto-generated for "messy" notes (daily journals, inbox dumps) as content changes, instead of only when the user types `/organize`. Lower priority than embedding jobs; respects `GpuLease`. Today the on-demand `/organize @path` covers the user value; auto-triggering is polish.
-- [ ] **Phase 5.5 deferred — Browse Organize panel.** When a note with a suggestion sidecar is opened in `/browse`, render an "Organize" panel listing each suggestion as an accept/reject chip. Accept produces a proposal card via the existing pipeline. Today suggestions surface only via `/organize` in chat (one card per extraction).
-- [ ] **Phase 5.5 deferred — proposal card edit-then-apply + discarded-proposal markers.** Card today has Apply / Discard. An Edit affordance that reopens the diff in the chat input as editable text, and persisting discarded proposal IDs as `<!-- discarded:proposal-id -->` markers in the chat-session markdown so the LLM doesn't re-propose the same thing, were both deferred from the original Phase 5.5 spec.
-- [ ] **Phase 5.5 deferred — `@`-mention title + alias matching.** V1 ships path-only matching. Building a richer `MentionIndex` that reads each note's frontmatter (title, aliases) at vault-change time would let users type `@grocery` and match `lists/grocery-list.md` by alias. Defer until measured miss rates justify the per-file frontmatter read cost.
-- [ ] **Phase 5.5 deferred — embedding-suggester accuracy measurement.** Curate ~30 representative phrasings, measure top-1 promotion accuracy, tune threshold (currently 0.55). Promote default to higher quality once measured.
-- [ ] **Phase 5.5 deferred — chip bar mobile `visualViewport` pinning + desktop hover-reveal collapse.** Today the bar uses natural flexbox layout (works on mobile because the browser pushes the input above the keyboard) and is always visible on desktop. Explicit `visualViewport.offsetTop + height` pinning and a desktop hover-reveal would polish both surfaces; defer until they prove insufficient in real use.
+2026-05-11: The "Out of scope for MVP" list and the post-MVP backlog were moved to [POST-MVP-PLANS-2026-05-11.md](./POST-MVP-PLANS-2026-05-11.md). When MVP work surfaces a new candidate, file it there. CONSTRAINTS §11 remains authoritative on what's permanently out of scope vs. just deferred.
