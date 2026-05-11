@@ -56,9 +56,11 @@
     speak,
   } from '$lib/chat/tts';
   import { logError } from '$lib/log';
+  import { trimHistoryToBudget } from '$lib/chat/budget';
   import { CAPABILITIES_PROMPT } from '$lib/llm/capabilities';
-  import { streamChat } from '$lib/llm/runtime';
+  import { getEngine, streamChat } from '$lib/llm/runtime';
   import { buildSystemPrompt } from '$lib/llm/system-prompt';
+  import { approxTokens, type TokenizableEngine } from '$lib/llm/tokenize';
   import { assembleContext, retrieve } from '$lib/memory';
   import {
     ensurePersonaStub,
@@ -154,6 +156,32 @@
   // banner switches from "yesterday's journal" copy to "N captures across
   // M sources" — and the Organize button targets the first source path.
   let reviewFreshSummary = $state<{ count: number; sources: NotePath[] } | undefined>(undefined);
+
+  // Phase 5.9.1: budget knobs. MIN_KEEP_MESSAGES is the floor for history
+  // trimming — we keep at least this many recent messages even if it
+  // means going slightly over budget (the user has to lose retrieval
+  // first; recent coreference is more load-bearing).
+  const MIN_KEEP_MESSAGES = 4;
+  // Conservative default context window — used when no model is loaded
+  // or the model variant doesn't expose its window. Gemma-2B/Llama-1B
+  // both ship 8K windows; the smallest WebLLM variant we offer is 8K.
+  const DEFAULT_CONTEXT_WINDOW = 8192;
+  function computeContextWindow(): number {
+    const engine = getEngine() as TokenizableEngine | undefined;
+    // WebLLM's runtime config exposes context_window_size on the loaded
+    // engine. We probe defensively — the field name has changed across
+    // WebLLM releases — and fall back to the conservative default.
+    const config = (engine as { runtimeConfig?: { context_window_size?: number } } | undefined)
+      ?.runtimeConfig;
+    const fromEngine = config?.context_window_size;
+    if (typeof fromEngine === 'number' && fromEngine > 0) return fromEngine;
+    return DEFAULT_CONTEXT_WINDOW;
+  }
+
+  // Phase 5.9.1: how many history turns we just trimmed off for the
+  // pending turn. Surfaced as a non-toast in-chat marker above the
+  // assistant's response. Cleared on send-success.
+  let droppedTurnsForCurrent = $state(0);
 
   // Phase 5.9: persona loaded on mount and refreshed whenever the file
   // changes in the vault. Stored as a plain `let` (not `$state`) because
@@ -349,18 +377,38 @@
         ...(llmEmitEnabled && { slashEmit: SLASH_EMIT_SYSTEM_INSTRUCTION }),
       });
       const systemPrompt = built.prompt;
+
+      // Phase 5.9.1: trim history so the prompt stays under budget. The
+      // chat-session markdown file keeps the full transcript — we only
+      // trim what the model sees. Dropped turns remain searchable via
+      // chat-RAG (Phase 5.7). MIN_KEEP preserves recent coreference.
+      const contextWindow = computeContextWindow();
+      const historyTokens = Math.floor(contextWindow * 0.3);
+      const candidateHistory = working.messages
+        .slice(0, -1)
+        .filter((message) => message.role !== 'system')
+        .map((message) => ({ role: message.role, content: message.content }));
+      const trimResult = trimHistoryToBudget(candidateHistory, historyTokens, {
+        countTokens: approxTokens,
+        minKeep: MIN_KEEP_MESSAGES,
+      });
+      if (trimResult.droppedCount > 0) {
+        droppedTurnsForCurrent = trimResult.droppedCount;
+        console.warn('[openbrain/budget]', {
+          dropped: trimResult.droppedCount,
+          droppedTokens: trimResult.droppedTokens,
+          kept: trimResult.trimmed.length,
+        });
+      } else {
+        droppedTurnsForCurrent = 0;
+      }
+
       const llmMessages: ChatCompletionMessageParam[] = [
         { role: 'system', content: systemPrompt },
-        // Replay prior turns. Skip system messages — they are slash-command
-        // status / confirmation lines and would confuse the model if echoed
-        // back as part of conversation history.
-        ...working.messages
-          .slice(0, -1)
-          .filter((message) => message.role !== 'system')
-          .map((message) => ({
-            role: message.role,
-            content: message.content,
-          })),
+        ...trimResult.trimmed.map((message) => ({
+          role: message.role,
+          content: message.content,
+        })),
         { role: 'user', content: assembled.userPrompt },
       ];
 
@@ -859,6 +907,18 @@
         </div>
       {/each}
 
+      {#if isStreaming && droppedTurnsForCurrent > 0}
+        <div class="message system trim-marker">
+          <span class="role">sys</span>
+          <div class="bubble">
+            <p class="trim-line">
+              ↥ {droppedTurnsForCurrent} earlier turn{droppedTurnsForCurrent === 1 ? '' : 's'}
+              archived to chat memory · search via <code>/find</code>
+            </p>
+          </div>
+        </div>
+      {/if}
+
       {#if isStreaming}
         <div class="message assistant streaming">
           <span class="role">ai</span>
@@ -1093,6 +1153,24 @@
 
   .cites.status {
     font-style: italic;
+  }
+
+  .trim-marker .bubble {
+    background: transparent;
+    border: none;
+    padding: 0;
+  }
+
+  .trim-line {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    opacity: 0.5;
+    margin: 0;
+  }
+
+  .trim-line code {
+    color: var(--color-accent);
+    background: transparent;
   }
 
   .cite {
