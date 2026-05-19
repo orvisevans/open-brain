@@ -1094,17 +1094,32 @@ Primary approach: **B1 (narrow self-retrieval filter)**, with fallback to **B2 (
 
 #### B1 — narrow self-retrieval filter (preferred)
 
-- [ ] In `assembleContext` (or its chat-RAG candidate-scoring step), accept a new optional `currentChatPath` and `liveHistoryTurnIds: Set<string>` arg pair.
-- [ ] Filter logic: drop a chunk from `.chats/<id>.md` only when `id === currentChatPath`'s id **and** the chunk's underlying turn id (or its source-line range, depending on how chat-chunker keys chunks) is in `liveHistoryTurnIds`. Chunks from the same session whose turns have aged out of `working.messages` via the Phase 5.9.1 sliding window pass through — that's the whole point of indexing chat sessions.
-- [ ] If the chat-chunker doesn't currently attach turn ids to chunks, add them (cheap: chat sessions already store message ids in `working.messages` and the markdown lines have stable per-turn anchors). If retrofitting turn ids proves expensive in this phase, fall through to B2 instead and file a follow-up.
-- [ ] Wire `currentChatPath` and `liveHistoryTurnIds` from the chat-page's `streamChat` call. Slash-handler LLM calls (`/edit`, `/organize`) pass `undefined` for both — they have no current-session concept.
-- [ ] Tests: 5+ covering: chunk from current session + live turn id → dropped; chunk from current session + aged-out turn id → kept; chunk from different session → kept; chunk from `notes/` → kept; no current path provided → all chunks kept.
+**Chunker pre-check (2026-05-19):** [src/lib/memory/chat-chunker.ts:34-38](../src/lib/memory/chat-chunker.ts) already tags each chunk with `messageIndex: number` and `messageTimestamp: number`. No schema retrofit — B1 is purely additive plumbing.
+
+**Trim/retrieve ordering pre-check (2026-05-19):** [src/routes/chat/+page.svelte:394-430](../src/routes/chat/+page.svelte) currently does `retrieve(...)` → `trimHistoryToBudget(...)`. B1 needs the post-trim set of "messages the model will actually see in plain history" to know which chunks are safely droppable without violating Phase 5.9.1's recall invariant. Two compatible wirings (pick one at implementation time):
+
+- **Option B1a — post-filter retrieval after trim.** Keep the existing call order, then drop chunks from `retrieval.noteRefs` / `assembled.context` whose `(sourcePath, messageIndex)` matches a message in `trimResult.trimmed`. Lower surface area; doesn't touch retrieval signatures. Risk: `assembleContext` has already built the system prompt string by then — filter would have to apply earlier in the pipeline or rebuild the assembled string. Probably means moving filter inside `retrieve`/`assembleContext` after all.
+- **Option B1b — reorder trim before retrieve.** Compute `trimResult` first (cheap; uses `approxTokens` on raw text), then pass the surviving `messageIndex` set into `retrieve(...)` as a new option. Reordering looks small but Phase 5.9.1's budget composition has retrieval depending on history-tokens-actually-used; touching the order means re-deriving the retrieval budget. Cleaner long-term, larger blast radius.
+
+Recommend B1a unless B1b's ordering ends up tidier in practice. Both end at the same place: a `RetrievalFilter = { chatPath, liveMessageIndices: Set<number> }` carrier, applied wherever it sits best.
+
+- [ ] Add `RetrievalFilter` type to the retrieval signature (location decided by B1a vs B1b pick).
+- [ ] Filter logic: drop a chunk from `.chats/<id>.md` only when `id === filter.chatPath`'s id **and** `chunk.messageIndex` is in `filter.liveMessageIndices`. Chunks from the same session whose turns have aged out of `working.messages` via the Phase 5.9.1 sliding window pass through — that's the whole point of indexing chat sessions.
+- [ ] Compute `liveMessageIndices` from `trimResult.trimmed` by mapping each kept message back to its index in `working.messages` (1:1 because chat sessions are append-only and indices are stable).
+- [ ] Wire `RetrievalFilter` from the chat-page's `streamChat` call. Slash-handler LLM calls (`/edit`, `/organize`) pass `undefined` — they have no current-session concept.
+- [ ] Tests: 5+ covering: chunk from current session + live messageIndex → dropped; chunk from current session + aged-out messageIndex → kept; chunk from different session → kept; chunk from `notes/` → kept; no filter provided → all chunks kept.
 
 #### B2 — anchor directive (fallback or addendum)
 
 - [ ] If B1 can't be done cleanly in this phase, add a single directive to `CAPABILITIES_PROMPT`: _"Answer the user's MOST RECENT message only. Earlier turns above are context. If retrieved notes reference past slash commands or system confirmations, those have already been handled by the host — do not narrate them as if you ran them."_
 - [ ] Even if B1 lands cleanly, evaluate whether B2 still adds value on the smallest model variant (Llama-3.2-1B is most prone to the misframing). Cheap to keep both; decide based on a manual replay of the 2026-05-19 chat.
 - [ ] Bump `CAPABILITIES_VERSION` if added; recheck char cap.
+
+#### B3 — lexical anchor on the current user turn (considered, not selected)
+
+Prepending the assembled `userPrompt` with a stable `"## Question to answer\n\n<user text>"` header was on the table during planning. **Not shipped in 5.9.2** because B1 + B2 together cover the same failure modes more directly (B1 removes the confabulation source; B2 frames the model's response orientation), and B3 alters the user-prompt format in a way that may interact awkwardly with the WebLLM chat template — it would need its own validation pass against each variant.
+
+Keep in mind for follow-up: if the 2026-05-19 replay still shows out-of-order responses after B1 + B2 ship, B3 is the next-cheapest lever to try. The reasoning is logged here so we don't re-derive it.
 
 #### Verification
 
