@@ -8,10 +8,11 @@
   } from '$lib/auth/installations';
   import { adoptBundle, getValidAccessToken, initSession } from '$lib/auth/session';
   import { wipeLocalData } from '$lib/auth/wipe';
+  import { loadAppModel } from '$lib/llm/app-model';
+  import { loadPreferredModelId } from '$lib/llm/model-preference';
   import {
     DEFAULT_VARIANT_ID,
     getVariant,
-    loadModel,
     MODEL_VARIANTS,
     type ModelVariant,
   } from '$lib/llm/runtime';
@@ -198,7 +199,9 @@
 
   // ── Model load state ──────────────────────────────────────────────────────
 
-  let selectedVariantId = $state<string>(model.id ?? DEFAULT_VARIANT_ID);
+  let selectedVariantId = $state<string>(
+    model.id ?? loadPreferredModelId() ?? DEFAULT_VARIANT_ID,
+  );
   const selectedVariant = $derived<ModelVariant | undefined>(getVariant(selectedVariantId));
 
   function pickVariant(id: string) {
@@ -206,22 +209,11 @@
   }
 
   function startLoadModel() {
-    model.loading = true;
-    model.loaded = false;
-    model.progress = 0;
-
-    const variantId = selectedVariantId;
     void (async () => {
       try {
-        await loadModel(variantId, (progress) => {
-          model.progress = progress;
-        });
-        model.loaded = true;
-        model.loading = false;
-        model.id = variantId;
+        await loadAppModel(selectedVariantId);
       } catch (error: unknown) {
         logError('setup/load-model', { error });
-        model.loading = false;
       }
     })();
   }

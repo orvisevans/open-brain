@@ -3,6 +3,7 @@
   import { page } from '$app/state';
 
   import { initSession, getValidAccessToken } from '$lib/auth/session';
+  import { bootstrapAppModel } from '$lib/llm/app-model';
   import { logError } from '$lib/log';
   import { bootstrapMemory, filterSidecarConflicts } from '$lib/memory';
   import { auth, model, network, repo } from '$lib/state.svelte';
@@ -107,6 +108,12 @@
   // from IndexedDB, start user-activity gates, and subscribe to vault writes.
   $effect(() => {
     bootstrapMemory();
+  });
+
+  // Reload the last-used WebLLM variant after refresh or dev HMR (the
+  // in-memory engine is lost; weights stay cached on disk).
+  $effect(() => {
+    void bootstrapAppModel();
   });
 
   // Live sync status — subscribed once, surfaced through this rune so the
