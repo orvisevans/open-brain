@@ -199,9 +199,7 @@
 
   // ── Model load state ──────────────────────────────────────────────────────
 
-  let selectedVariantId = $state<string>(
-    model.id ?? loadPreferredModelId() ?? DEFAULT_VARIANT_ID,
-  );
+  let selectedVariantId = $state<string>(model.id ?? loadPreferredModelId() ?? DEFAULT_VARIANT_ID);
   const selectedVariant = $derived<ModelVariant | undefined>(getVariant(selectedVariantId));
 
   function pickVariant(id: string) {

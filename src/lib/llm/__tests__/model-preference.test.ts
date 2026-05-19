@@ -8,12 +8,40 @@ import {
 
 const STORAGE_KEY = 'openbrain.preferred-model-id';
 
+// vitest runs in the node environment by default; localStorage is a DOM
+// API. Install a minimal in-memory shim so the production code (which
+// reads/writes via globalThis.localStorage) can run unmodified.
+class MemoryStorage {
+  private store = new Map<string, string>();
+  clear(): void {
+    this.store.clear();
+  }
+  getItem(key: string): string | null {
+    // eslint-disable-next-line unicorn/no-null -- Storage interface requires null
+    return this.store.get(key) ?? null;
+  }
+  setItem(key: string, value: string): void {
+    this.store.set(key, value);
+  }
+  removeItem(key: string): void {
+    this.store.delete(key);
+  }
+  get length(): number {
+    return this.store.size;
+  }
+  key(index: number): string | null {
+    // eslint-disable-next-line unicorn/no-null -- Storage interface requires null
+    return [...this.store.keys()][index] ?? null;
+  }
+}
+
 beforeEach(() => {
-  globalThis.localStorage.clear();
+  (globalThis as { localStorage: Storage }).localStorage =
+    new MemoryStorage() as unknown as Storage;
 });
 
 afterEach(() => {
-  globalThis.localStorage.clear();
+  (globalThis as { localStorage?: Storage }).localStorage?.clear();
 });
 
 describe('model-preference', () => {

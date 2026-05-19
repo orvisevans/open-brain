@@ -30,6 +30,10 @@ export default tseslint.config(
       'node_modules/**',
       'coverage/**',
       '*.min.js',
+      // Claude Code's local state (worktrees, transcripts, etc.) is git-ignored
+      // — also keep ESLint out so leftover worktrees with their own .svelte-kit/
+      // trees don't surface generated-code lint errors at the root project.
+      '.claude/**',
       // Cloudflare Pages Functions live outside the SvelteKit TS project graph
       // (Cloudflare compiles them with its own toolchain on deploy). Linting
       // them with our typed rules would require a separate tsconfig + project
