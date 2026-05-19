@@ -63,6 +63,13 @@ export default defineConfig({
     ],
   },
   server: {
+    // Don't trigger HMR / full reloads on documentation or agent-config
+    // changes. None of these paths are imported by the app, so edits to
+    // them should never restart the dev server. Vite merges this with its
+    // own defaults (node_modules, .git).
+    watch: {
+      ignored: ['**/docs/**', '**/*.md', '**/.claude/**', '**/.cursor/**'],
+    },
     proxy: {
       // api.github.com → installation / user lookups (installations.ts).
       '/__gh_api': {
