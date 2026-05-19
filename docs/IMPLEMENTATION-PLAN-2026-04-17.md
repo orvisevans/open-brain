@@ -1024,12 +1024,10 @@ A pathological case: even after trimming history down to `MIN_KEEP`, the system 
 
 Two intertwined tracks, both small:
 
-- **(A) Self-knowledge.** Ship an app-bundled, read-only help note at `.openbrain/help.md` and admit it to the retrieval index. Specific how-to questions then anchor against retrieved chunks of that doc instead of confabulating. Keep `CAPABILITIES_PROMPT` lean (behavioral guardrails only); long-form how-to lives in the indexed doc where retrieval can budget it on demand.
-- **(B) Conversational coherence.** Stop chat-RAG from feeding the model the current session's own slash-command lines and system confirmations back to itself, and add a one-line system directive that anchors the model to the most-recent turn. Both are cheap and complementary.
+- **(A) Self-knowledge.** Ship an app-bundled, read-only help corpus under `.openbrain/help/` (three files: `getting-started.md`, `slash-commands.md`, `vault-layout.md`) and admit those paths to the retrieval index. Specific how-to questions then anchor against retrieved chunks instead of confabulating. Keep `CAPABILITIES_PROMPT` lean (behavioral guardrails only); long-form how-to lives in the indexed corpus where retrieval can budget it on demand. Also ship a deterministic `/help` slash command for command discovery without an LLM round-trip.
+- **(B) Conversational coherence.** Suppress chat-RAG from re-surfacing chunks of the **current** chat session that the model is already seeing in its live history. Phase 5.9.1's sliding-window strategy explicitly relies on chat-RAG to recover **old** trimmed turns, so the filter has to be narrow: drop chunks whose underlying turn is still present in `working.messages`; keep chunks for turns that have aged out. If that distinction proves impractical, fall back to B2 (system-prompt anchor directive) instead.
 
-This is the obvious best architecture for (A) — the user proposed it explicitly and it matches the existing pipeline (whitelist a path through `notifyMemoryOfChange`, bundle the content, let retrieval do the rest). Tasks below ship it directly.
-
-For (B), three credible approaches are listed; **picking among them is an open question**. No tasks are committed for (B) until the user lands on one (see "Open questions").
+Both tracks materialise into tasks below — picked from the open-question round on 2026-05-19.
 
 ### Why an indexed help note beats expanding `CAPABILITIES_PROMPT`
 
@@ -1043,85 +1041,98 @@ For (B), three credible approaches are listed; **picking among them is an open q
 
 The cost of a retrieval miss is bounded: `CAPABILITIES_PROMPT` still ships and still names every command. The indexed doc is a depth layer, not the only layer.
 
-### Tasks (A) — indexed help note
+### Tasks (A) — indexed help corpus + `/help` command
 
-#### Content bundle (`src/lib/llm/help-doc.ts` — new)
+#### Content bundle (`src/lib/llm/help-corpus.ts` — new)
 
-- [ ] `HELP_DOC_PATH: NotePath = '.openbrain/help.md'`.
-- [ ] `HELP_DOC_VERSION = 1`. Bumped whenever the content changes; embedding sidecar carries the version so a stale on-disk copy is rewritten.
-- [ ] `HELP_DOC_CONTENT` — markdown string covering, per slash command, one paragraph: what it does, what arg(s) it takes, what shows up in the vault after running. Plus a top-level "What is Open Brain?" section and a "Vault layout" section that mirrors (but expands on) the same lines in `CAPABILITIES_PROMPT`. Target length: 1500–2500 chars per section, ~12–20 KB total — big enough to be useful, small enough that a single retrieved chunk is meaningful.
-- [ ] Test: every command in `SLASH_COMMANDS` has a heading in `HELP_DOC_CONTENT` (assert by regex) so the doc stays in sync with the command list as new commands ship.
+- [ ] `HELP_CORPUS_VERSION = 1`. Bumped whenever any doc's content changes; embedding sidecars carry the version so stale on-disk copies are rewritten.
+- [ ] `HELP_CORPUS` — `{ path: NotePath; content: string }[]` with three entries:
+  - `.openbrain/help/getting-started.md` — "What is Open Brain?", first-run flow, sync model, where notes live, what RAG does for you, when to expect the model to draw from notes vs. just chat.
+  - `.openbrain/help/slash-commands.md` — one section per command in `SLASH_COMMANDS`, headed `## /command`, with: what it does, args, what shows up in the vault, an example. This is the anchor surface for "how do I X?" retrieval and for the deterministic `/help <command>` output.
+  - `.openbrain/help/vault-layout.md` — `notes/`, `journal/`, `lists/`, `.chats/`, `.openbrain/`, `.memory/` — what each is for, what writes there, what reads from there.
+- [ ] Target ~3–6 KB per file (one or two retrievable chunks each, depending on the chunker's window). Total bundle under 20 KB.
+- [ ] Test: every command in `SLASH_COMMANDS` has a `## /<name>` heading in the slash-commands doc; every section in each doc starts with a level-2 heading (for stable chunk boundaries).
 
 #### Whitelist through the memory pipeline
 
-- [ ] [src/lib/memory/index.ts:194](../src/lib/memory/index.ts) — change the `.openbrain/` early-return to allow `.openbrain/help.md` (and only that path, for now) through. Inline rationale comment: help.md is app-shipped indexable content, distinct from persona/config which stay private.
-- [ ] Verify the embedding queue's per-path lock and dedupe logic handles a path that gets re-written on every bump cleanly. No new test needed; the embedding queue already covers re-enqueueing the same path.
-- [ ] The chat-chunker (Phase 5.7) and the standard chunker both currently key off path prefix (`.chats/` vs `notes/`); confirm help.md falls into the standard note path. If it doesn't, add the prefix to the standard branch explicitly rather than overloading the chat chunker.
+- [ ] [src/lib/memory/index.ts:194](../src/lib/memory/index.ts) — change the `.openbrain/` early-return to a more specific filter: paths matching `.openbrain/help/*.md` are admitted; everything else under `.openbrain/` (persona, config, command-stats) still short-circuits. Inline rationale comment: the help corpus is app-shipped indexable content; persona and config stay private.
+- [ ] Skip the extraction queue for help docs (`if (path.startsWith('.openbrain/help/')) return;` before the `extractionQueue.enqueue` call). They're structured how-to text; the LLM extraction pass adds nothing and burns inference.
+- [ ] Standard chunker handles `.openbrain/help/*.md` (path prefix is neither `.chats/` nor a journal date — it should fall through to the default branch already). Confirm in tests rather than assuming.
 
 #### Bootstrap rewrite
 
-- [ ] Add `ensureHelpDoc(vault)` alongside the existing `ensurePersonaStub`: if `.openbrain/help.md` is missing OR its first-line `<!-- openbrain-help: vN -->` marker is lower than `HELP_DOC_VERSION`, overwrite. Otherwise leave it alone (a user who copied the file out manually still gets fresh content; the version marker is the trigger).
-- [ ] Called from `bootstrapMemory()` (or wherever `ensurePersonaStub` is wired today). Runs once per mount, behind the same "signed-in + vault available" gate.
+- [ ] Add `ensureHelpCorpus(vault)` alongside the existing `ensurePersonaStub`: for each entry in `HELP_CORPUS`, if the file is missing OR its first-line `<!-- openbrain-help: vN -->` marker is lower than `HELP_CORPUS_VERSION`, overwrite. Otherwise leave it alone.
+- [ ] Called from `bootstrapMemory()` (or wherever `ensurePersonaStub` is wired today). Runs once per mount, behind the same "signed-in + vault available" gate. Re-enqueue happens automatically through the vault-change subscription that `bootstrapMemory` already wires.
 
 #### Browse UX — read-only banner
 
-- [ ] `.openbrain/help.md` already surfaces under the "App settings" section from Phase 5.9. Add a read-only banner above the editor: _"This file is shipped with Open Brain and rewritten on update. Edit `.openbrain/persona.md` for your own notes."_ Mirrors the existing Phase 5.7 chat read-only banner pattern.
-- [ ] The editor's save button can stay enabled (the user might want to experiment locally) — the bootstrap rewrite will clobber on next reload. Document the clobber behavior in the banner copy.
+- [ ] Surface `.openbrain/help/` files under the existing "App settings" section from Phase 5.9 (extend `vault.listAppSettings()` to recurse one level, or add `.openbrain/help/` to its known-prefix set).
+- [ ] Add a read-only banner above the editor for any file under `.openbrain/help/`: _"This file is shipped with Open Brain and rewritten on update. Edit `.openbrain/persona.md` for your own notes."_ Mirrors the existing Phase 5.7 chat read-only banner pattern.
+- [ ] Editor's save button stays enabled — bootstrap rewrites on next reload. Banner copy documents the clobber behavior.
 
 #### Retrieval pipeline check
 
-- [ ] Confirm that `assembleContext` doesn't filter `.openbrain/` paths out of its candidate set the way `notifyMemoryOfChange` does. If it does, lift that filter for `help.md` specifically.
-- [ ] Manual: ask "how do I save a journal entry?" — answer should cite `.openbrain/help.md` and describe `/journal`. Add this as an exit criterion below.
+- [ ] Confirm that `assembleContext` doesn't filter `.openbrain/` paths out of its candidate set. If it does, lift the filter for `.openbrain/help/*.md` specifically.
+- [ ] Manual: ask "how do I save a journal entry?" — answer cites a `.openbrain/help/` path and describes `/journal`. Exit criterion below.
 
-#### `CAPABILITIES_PROMPT` trim (small)
+#### `/help` slash command (`src/lib/chat/slash-commands.ts` or sibling)
 
-- [ ] Remove the per-command one-line list from `CAPABILITIES_PROMPT` (lines 31–32 of [src/lib/llm/capabilities.ts](../src/lib/llm/capabilities.ts)) — leave just the names, no descriptions. Saves ~80 tokens and lets the help-doc retrieval carry the explanations. The behavioral guardrails (small talk, journal suggestion, citation discipline) stay.
+- [ ] Register `/help` (no-arg) and `/help <command>` in the parser/dispatch alongside the existing commands.
+- [ ] No LLM call. No-arg form returns a deterministic system message listing every command + one-line description (sourced from a `SLASH_COMMAND_SHORTHELP` map kept next to `SLASH_COMMANDS`), plus a closing line like _"Run `/help <command>` for details, or ask in plain English."_
+- [ ] `/help <command>` returns the corresponding `## /<command>` section of `slash-commands.md`, located by string-matching the heading (so the help corpus stays the single source of truth for command descriptions). Unknown command → error system message listing valid commands.
+- [ ] Tests: parser recognises both forms; no-arg returns a string covering every `SLASH_COMMANDS` entry; per-command form returns the right section; unknown-command form errors cleanly.
+- [ ] Add `/help` to `SLASH_COMMANDS`. The slash-commands.md doc covers it like any other command — including a meta entry explaining that `/help` itself is deterministic and never calls the model.
+
+#### `CAPABILITIES_PROMPT` trim
+
+- [ ] Remove the per-command one-line list from `CAPABILITIES_PROMPT` (lines 31–32 of [src/lib/llm/capabilities.ts](../src/lib/llm/capabilities.ts)) — leave just the names, no descriptions, plus a new line: _"For details on any command, the user can run `/help <command>` or ask in plain English; the help corpus at `.openbrain/help/` is retrievable."_ Saves ~80 tokens net and lets the model know retrieval will carry depth on demand.
 - [ ] Bump `CAPABILITIES_VERSION` to 2. Re-tighten the char cap to ~1100 chars.
 
 ### Tasks (B) — conversational coherence
 
-**Approach not yet selected.** Tasks materialise after the open question below resolves. Candidates listed in "Approaches considered" section.
+Primary approach: **B1 (narrow self-retrieval filter)**, with fallback to **B2 (anchor directive)** if B1 can't preserve Phase 5.9.1's old-turn recall.
 
-### Approaches considered for (B)
+#### B1 — narrow self-retrieval filter (preferred)
 
-**B1. Suppress self-retrieval.** In `assembleContext` (or its chat-RAG branch), drop any chunks whose source path matches the _current_ chat session's `.chats/<id>.md`. The current session is already in `working.messages`; retrieving it again is redundant _and_ invites the confabulation we saw. Implementation: thread a `currentChatPath` arg through `assembleContext`, filter at the candidate stage. Small (~30 LOC + tests). Targets the hallucinated-action failure directly.
+- [ ] In `assembleContext` (or its chat-RAG candidate-scoring step), accept a new optional `currentChatPath` and `liveHistoryTurnIds: Set<string>` arg pair.
+- [ ] Filter logic: drop a chunk from `.chats/<id>.md` only when `id === currentChatPath`'s id **and** the chunk's underlying turn id (or its source-line range, depending on how chat-chunker keys chunks) is in `liveHistoryTurnIds`. Chunks from the same session whose turns have aged out of `working.messages` via the Phase 5.9.1 sliding window pass through — that's the whole point of indexing chat sessions.
+- [ ] If the chat-chunker doesn't currently attach turn ids to chunks, add them (cheap: chat sessions already store message ids in `working.messages` and the markdown lines have stable per-turn anchors). If retrofitting turn ids proves expensive in this phase, fall through to B2 instead and file a follow-up.
+- [ ] Wire `currentChatPath` and `liveHistoryTurnIds` from the chat-page's `streamChat` call. Slash-handler LLM calls (`/edit`, `/organize`) pass `undefined` for both — they have no current-session concept.
+- [ ] Tests: 5+ covering: chunk from current session + live turn id → dropped; chunk from current session + aged-out turn id → kept; chunk from different session → kept; chunk from `notes/` → kept; no current path provided → all chunks kept.
 
-**B2. Anchor directive in the system prompt.** Add to `CAPABILITIES_PROMPT` (or as a separate slot in `buildSystemPrompt`):
-> _"Answer the user's MOST RECENT message only. Earlier turns above are context, not pending questions. If retrieved notes reference past slash commands or system confirmations, those have already been handled — do not narrate them as if you ran them."_
->
-> Cheap (~30 tokens). Targets the out-of-order replies. Behavioral, not structural — won't be 100% reliable on a 1–2B model, but it gives the model the right frame.
+#### B2 — anchor directive (fallback or addendum)
 
-**B3. Re-mark the current user turn in the prompt.** Instead of relying on chat-completion role tags, prepend the assembled `userPrompt` with a stable anchor: `"## Question to answer\n\n<user text>"`. Tiny intervention, makes the most-recent turn lexically distinct from anything the retrieval block might echo. Compatible with both B1 and B2.
+- [ ] If B1 can't be done cleanly in this phase, add a single directive to `CAPABILITIES_PROMPT`: _"Answer the user's MOST RECENT message only. Earlier turns above are context. If retrieved notes reference past slash commands or system confirmations, those have already been handled by the host — do not narrate them as if you ran them."_
+- [ ] Even if B1 lands cleanly, evaluate whether B2 still adds value on the smallest model variant (Llama-3.2-1B is most prone to the misframing). Cheap to keep both; decide based on a manual replay of the 2026-05-19 chat.
+- [ ] Bump `CAPABILITIES_VERSION` if added; recheck char cap.
 
-The instinct is **B1 + B2 + B3 together** — they're cheap, complementary, and each addresses a different vector. But the user should green-light before we touch the chat-completion path, since changes there ripple into Phase 5.9.1's budget math.
+#### Verification
 
-### Open questions
-
-- [ ] **Which (B) approach(es) to ship?** Default proposal is B1 + B2 + B3. B1 alone if we want to keep the system prompt byte-stable; B2 alone if we don't want to touch retrieval; B3 alone is the smallest possible change. **User answer needed before tasks materialise.**
-- [ ] **Deterministic `/help` slash command?** A `/help` (no-arg) and `/help <command>` that returns the corresponding section of `HELP_DOC_CONTENT` without calling the LLM. Trivially reliable for discoverability ("what commands exist?"), at the cost of one more slash command. Include in 5.9.2 or defer? **User answer needed.**
-- [ ] **Multiple indexed app docs vs single help.md?** Single doc is enough for MVP. Multi-doc (one per command? `getting-started.md`, `slash-commands.md`, `vault-layout.md`?) gives retrieval cleaner anchors but adds bundle/bookkeeping cost. Default: single doc unless retrieval testing shows it under-chunks.
+- [ ] Manual: replay the 2026-05-19 chat ([`.chats/2026-05-19_14-23-44-468.md`](../.chats)) — "I need a toothbrush and a low cal treat" no longer triggers a cat answer; "How do I use your slash commands?" no longer claims `/organize` ran; "what did we talk about earlier?" still retrieves trimmed-out turns from the same session (Phase 5.9.1 invariant).
 
 ### Token-budget impact
 
 | Slot | Before 5.9.2 | After 5.9.2 | Notes |
 | --- | --- | --- | --- |
-| `CAPABILITIES_PROMPT` | ~350 tok | ~270 tok | Trimmed per-command descriptions; help.md carries them. |
-| Help doc in retrieval | n/a | 0–~500 tok (variable) | Only present when retrieval surfaces it. Counts against the existing 50%/retrieval slot from Phase 5.9.1 — no new budget. |
+| `CAPABILITIES_PROMPT` | ~350 tok | ~270 tok | Per-command descriptions removed; one line added pointing the model at `/help` + the retrievable help corpus. |
+| Help corpus in retrieval | n/a | 0–~600 tok (variable) | Only present when retrieval surfaces it. Counts against the existing 50% retrieval slot from Phase 5.9.1 — no new budget. |
 | Anchor directive (B2) | n/a | ~30 tok if shipped | Inside `CAPABILITIES_PROMPT` cap. |
-| Current-turn anchor (B3) | n/a | ~5 tok | Negligible. |
+| `/help` command output | n/a | 0 tok in LLM prompt | Deterministic system message; never enters a chat-completion call. |
 
-Net effect: roughly flat on the small-talk path (less capabilities, no retrieval); modestly higher on a how-do-I-X path where the help doc is retrieved — which is exactly when we want it.
+Net effect: roughly flat on the small-talk path (smaller capabilities, no retrieval); modestly higher on a how-do-I-X path where the help corpus is retrieved — which is exactly when we want it.
 
 ### Exit criteria
 
-- [ ] `HELP_DOC_CONTENT` ships with sections for every command in `SLASH_COMMANDS`; the lint test for command/heading parity is green.
-- [ ] `bootstrapMemory()` (or sibling) writes `.openbrain/help.md` on first run and on `HELP_DOC_VERSION` bumps; embedding queue picks it up.
-- [ ] `notifyMemoryOfChange` admits `.openbrain/help.md` (and only it) through the `.openbrain/` filter, with rationale comment.
-- [ ] Browse shows a read-only banner on `.openbrain/help.md`.
+- [ ] `HELP_CORPUS` ships with three files (`getting-started.md`, `slash-commands.md`, `vault-layout.md`); the lint test for command/heading parity in `slash-commands.md` is green.
+- [ ] `bootstrapMemory()` (or sibling) writes `.openbrain/help/*.md` on first run and on `HELP_CORPUS_VERSION` bumps; embedding queue picks them up.
+- [ ] `notifyMemoryOfChange` admits `.openbrain/help/*.md` through the `.openbrain/` filter (extraction queue still skipped); persona and other `.openbrain/` files stay private.
+- [ ] Browse shows a read-only banner on `.openbrain/help/*.md`.
 - [ ] `CAPABILITIES_PROMPT` trimmed; `CAPABILITIES_VERSION` bumped; char-cap test re-tightened.
-- [ ] Manual: ask "how do I save a journal entry?" — answer cites `.openbrain/help.md` and describes `/journal`.
-- [ ] Manual: ask "How do I use your slash commands?" — answer comes from retrieved help.md, not from a hallucinated `/organize` run.
-- [ ] (B) tasks shipped per the user's open-question answer; manual replay of the failing 2026-05-19 chat produces in-order, non-hallucinated responses.
+- [ ] `/help` and `/help <command>` ship as deterministic (no-LLM) slash commands; added to `SLASH_COMMANDS`; tests cover both forms and the unknown-command path.
+- [ ] B1 self-retrieval filter ships (chunks from the current session whose turns are still in the live history are dropped from retrieval; older trimmed turns from the same session remain retrievable). Or — if B1 can't preserve the Phase 5.9.1 recall invariant — B2 ships instead, with the reason documented.
+- [ ] Manual: ask "how do I save a journal entry?" — answer cites a `.openbrain/help/` path and describes `/journal`.
+- [ ] Manual: ask "How do I use your slash commands?" — answer comes from retrieved help corpus, not from a hallucinated `/organize` run.
+- [ ] Manual: replay 2026-05-19 chat — "I need a toothbrush and a low cal treat" no longer triggers a cat answer; "what did we talk about earlier?" still recalls trimmed turns from the same session (Phase 5.9.1 invariant intact).
 - [ ] `npm run check` green.
 - [ ] Tag `phase-5.9.2-complete`.
 
