@@ -75,6 +75,25 @@ export interface RetrieveOptions {
   // excluded entirely — the model citing itself is rarely useful and adds
   // noise. Set true to include them (e.g. for `/find --include-assistant`).
   includeAssistantTurns?: boolean;
+  // Phase 5.9.2 (B1). Drop chat-chunks that the model is already going to
+  // see verbatim in the live conversation history. Without this, chat-RAG
+  // can re-surface the prior slash-command lines + system confirmations
+  // for the current session, and small models then narrate handled
+  // actions as if they ran them. Critically, this DOES NOT block chunks
+  // for messages that have aged out of the live history via Phase 5.9.1's
+  // sliding-window trim — those remain retrievable so the model can still
+  // recall "what did we discuss 30 turns ago?" The caller computes
+  // `liveMessageIndices` from the post-trim message set in working memory.
+  filter?: RetrievalFilter;
+}
+
+export interface RetrievalFilter {
+  // Path of the active chat session, e.g. ".chats/abc123.md". Only chunks
+  // whose `notePath === chatPath` are eligible for filtering.
+  chatPath: NotePath;
+  // Set of `messageIndex` values that the LLM will see in plain history on
+  // this turn. Chunks tagged with one of these indices are dropped.
+  liveMessageIndices: ReadonlySet<number>;
 }
 
 const DEFAULT_K = 5;
@@ -95,6 +114,7 @@ export async function retrieve(
   const includeChats = options.includeChats ?? true;
   const chatWeight = options.chatWeight ?? DEFAULT_CHAT_WEIGHT;
   const includeAssistantTurns = options.includeAssistantTurns ?? false;
+  const filter = options.filter;
 
   if (query.trim() === '' || k <= 0) {
     return { query, chunks: [], noteRefs: [] };
@@ -128,6 +148,14 @@ export async function retrieve(
     for (const chunk of sidecar.embeddings) {
       if (chunk.vector.length !== queryVector.length) continue;
       if (resolvedSource === 'chat' && !includeAssistantTurns && chunk.role === 'assistant') {
+        continue;
+      }
+      // B1: drop chunks for messages the LLM will already see in plain history.
+      if (
+        path === filter?.chatPath &&
+        chunk.messageIndex !== undefined &&
+        filter.liveMessageIndices.has(chunk.messageIndex)
+      ) {
         continue;
       }
       const rawScore = cosine(queryVector, chunk.vector);

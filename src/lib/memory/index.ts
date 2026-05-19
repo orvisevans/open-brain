@@ -5,6 +5,7 @@
 
 import type { ChatCompletionMessageParam } from '@mlc-ai/web-llm';
 
+import { isHelpCorpusPath } from '$lib/llm/help-corpus';
 import { GEMMA_MODEL_ID, getEngine, gpuLease } from '$lib/llm/runtime';
 import { logError } from '$lib/log';
 import { syncEngine } from '$lib/sync';
@@ -188,16 +189,21 @@ export function teardownMemoryForTest(): void {
 
 export function notifyMemoryOfChange(path: string): void {
   // Sidecars (.memory/...) are written by the queues themselves — re-enqueueing
-  // would loop. App-state metadata under .openbrain/ (Phase 5.5 command-stats
-  // and friends) is not embeddable content.
+  // would loop. App-state metadata under .openbrain/ (Phase 5.5 command-stats,
+  // Phase 5.9 persona, future config) is not embeddable content — EXCEPT for
+  // the Phase 5.9.2 help corpus under .openbrain/help/, which is app-shipped
+  // documentation indexed by retrieval so users can ask the model about Open
+  // Brain itself and have it draw on real text instead of confabulating.
   if (isSidecarPath(path)) return;
-  if (path.startsWith('.openbrain/')) return;
+  if (path.startsWith('.openbrain/') && !isHelpCorpusPath(path)) return;
   // Chat sessions (Phase 5.7) flow through the embedding queue so retrieval
   // can find them, but skip the LLM extraction pass — chats are
   // conversational rather than note-shaped, and the summary/entities fields
-  // don't carry their value the same way.
+  // don't carry their value the same way. The help corpus is similarly
+  // structured how-to text; the extraction pass adds nothing and burns
+  // inference, so skip it too.
   embeddingQueue.enqueue(path);
-  if (!path.startsWith('.chats/')) {
+  if (!path.startsWith('.chats/') && !isHelpCorpusPath(path)) {
     extractionQueue.enqueue(path);
   }
   // Phase 5.8: auto-organize fires for journal + chat paths only. The

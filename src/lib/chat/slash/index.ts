@@ -9,6 +9,7 @@ import { appendHandler } from './handlers/append';
 import { archiveHandler } from './handlers/archive';
 import { editHandler } from './handlers/edit';
 import { findHandler } from './handlers/find';
+import { helpHandler } from './handlers/help';
 import { journalHandler } from './handlers/journal';
 import { listHandler } from './handlers/list';
 import { noteHandler } from './handlers/note';
@@ -61,6 +62,7 @@ const CORE_HANDLERS: { kind: ParsedCommand['kind']; handler: SlashHandler }[] = 
   { kind: 'find', handler: findHandler },
   { kind: 'archive', handler: archiveHandler },
   { kind: 'tag', handler: tagHandler },
+  { kind: 'help', handler: helpHandler },
 ];
 
 let coreRegistered = false;

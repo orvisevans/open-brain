@@ -58,7 +58,9 @@
   } from '$lib/chat/tts';
   import { logError } from '$lib/log';
   import { trimHistoryToBudget } from '$lib/chat/budget';
+  import { chatPath } from '$lib/chat/format';
   import { CAPABILITIES_PROMPT } from '$lib/llm/capabilities';
+  import { ensureHelpCorpus } from '$lib/llm/help-corpus';
   import { getEngine, streamChat } from '$lib/llm/runtime';
   import { buildSystemPrompt } from '$lib/llm/system-prompt';
   import { approxTokens, type TokenizableEngine } from '$lib/llm/tokenize';
@@ -211,6 +213,13 @@
         await ensurePersonaStub(personaReadVault, personaWriteVault);
       } catch (error: unknown) {
         logError('chat/persona-stub', { error });
+      }
+      // Phase 5.9.2: write/refresh the app-shipped help corpus under
+      // .openbrain/help/ so retrieval and `/help` have a source of truth.
+      try {
+        await ensureHelpCorpus(personaReadVault, personaWriteVault);
+      } catch (error: unknown) {
+        logError('chat/help-corpus', { error });
       }
       await refreshPersona();
     })();
@@ -388,6 +397,44 @@
     void scrollMessagesToBottom(true);
 
     try {
+      // Phase 5.9.1: compute the trim plan FIRST so we know which messages
+      // the LLM will actually see in plain history. Phase 5.9.2 needs that
+      // set to filter chat-RAG retrieval — without it, the chunks for the
+      // current session's prior turns get re-fed to the model and small
+      // models narrate handled slash commands as if they ran them.
+      const contextWindow = computeContextWindow();
+      const historyTokens = Math.floor(contextWindow * 0.3);
+      const nonSystemWorkingIndices: number[] = [];
+      const candidateHistory: { role: 'user' | 'assistant' | 'system'; content: string }[] = [];
+      for (const [index, message] of working.messages.slice(0, -1).entries()) {
+        if (message.role === 'system') continue;
+        nonSystemWorkingIndices.push(index);
+        candidateHistory.push({ role: message.role, content: message.content });
+      }
+      const trimResult = trimHistoryToBudget(candidateHistory, historyTokens, {
+        countTokens: approxTokens,
+        minKeep: MIN_KEEP_MESSAGES,
+      });
+      if (trimResult.droppedCount > 0) {
+        droppedTurnsForCurrent = trimResult.droppedCount;
+        console.warn('[openbrain/budget]', {
+          dropped: trimResult.droppedCount,
+          droppedTokens: trimResult.droppedTokens,
+          kept: trimResult.trimmed.length,
+        });
+      } else {
+        droppedTurnsForCurrent = 0;
+      }
+
+      // Phase 5.9.2 (B1): build the live-history index set for the
+      // retrieval filter. Trim drops oldest-first, so the surviving
+      // messages occupy the tail of `nonSystemWorkingIndices`. The current
+      // user message (last index of working.messages) is always live too.
+      const keptCount = trimResult.trimmed.length;
+      const liveMessageIndices = new Set<number>(nonSystemWorkingIndices.slice(-keptCount));
+      liveMessageIndices.add(working.messages.length - 1);
+      const currentChatPath = chatPath(current.id);
+
       // Phase 5.7: pass listChats so chat-RAG can surface past conversations.
       // Notes still dominate (chatWeight=0.7) but searching for a topic the
       // user typed in chat last week now actually finds it.
@@ -398,6 +445,9 @@
           listChats: () => vault.listChats(),
         },
         text,
+        {
+          filter: { chatPath: currentChatPath, liveMessageIndices },
+        },
       );
       const assembled = assembleContext(retrieval);
       streamingCitations = retrieval.noteRefs;
@@ -413,31 +463,6 @@
         ...(llmEmitEnabled && { slashEmit: SLASH_EMIT_SYSTEM_INSTRUCTION }),
       });
       const systemPrompt = built.prompt;
-
-      // Phase 5.9.1: trim history so the prompt stays under budget. The
-      // chat-session markdown file keeps the full transcript — we only
-      // trim what the model sees. Dropped turns remain searchable via
-      // chat-RAG (Phase 5.7). MIN_KEEP preserves recent coreference.
-      const contextWindow = computeContextWindow();
-      const historyTokens = Math.floor(contextWindow * 0.3);
-      const candidateHistory = working.messages
-        .slice(0, -1)
-        .filter((message) => message.role !== 'system')
-        .map((message) => ({ role: message.role, content: message.content }));
-      const trimResult = trimHistoryToBudget(candidateHistory, historyTokens, {
-        countTokens: approxTokens,
-        minKeep: MIN_KEEP_MESSAGES,
-      });
-      if (trimResult.droppedCount > 0) {
-        droppedTurnsForCurrent = trimResult.droppedCount;
-        console.warn('[openbrain/budget]', {
-          dropped: trimResult.droppedCount,
-          droppedTokens: trimResult.droppedTokens,
-          kept: trimResult.trimmed.length,
-        });
-      } else {
-        droppedTurnsForCurrent = 0;
-      }
 
       const llmMessages: ChatCompletionMessageParam[] = [
         { role: 'system', content: systemPrompt },

@@ -3,6 +3,7 @@
 
   import Editor from '$lib/browse/Editor.svelte';
   import { parseConflicts } from '$lib/browse/conflict';
+  import { isHelpCorpusPath } from '$lib/llm/help-corpus';
   import { logError } from '$lib/log';
   import { syncEngine } from '$lib/sync';
   import { vault, type NotePath } from '$lib/vault';
@@ -167,6 +168,10 @@
   // per-token cost. Other `.openbrain/*` files are bookkeeping and aren't
   // surfaced in Browse, so a single check on the persona path is enough.
   const isPersona = $derived(path === '.openbrain/persona.md');
+  // Phase 5.9.2: help corpus files are app-shipped and rewritten on
+  // version bumps. The editor stays writable so a user can experiment
+  // locally, but the banner sets the expectation that edits won't stick.
+  const isHelpCorpus = $derived(path !== undefined && isHelpCorpusPath(path));
 
   function handleChange(next: string): void {
     const current = path;
@@ -253,6 +258,15 @@
       <span>
         ⚙ persona · included in every chat turn · keep it short, every word counts against your
         model context
+      </span>
+    </div>
+  {/if}
+
+  {#if isHelpCorpus}
+    <div class="persona-banner" role="status">
+      <span>
+        📖 read-only-ish · this file is shipped with Open Brain and rewritten on update · edit
+        <a href="/browse/.openbrain/persona.md">.openbrain/persona.md</a> for your own notes
       </span>
     </div>
   {/if}
@@ -358,7 +372,8 @@
     opacity: 0.75;
   }
 
-  .chat-banner a {
+  .chat-banner a,
+  .persona-banner a {
     color: var(--color-accent);
     text-decoration: none;
   }

@@ -205,4 +205,28 @@ describe('parseSlashCommand', () => {
       });
     });
   });
+
+  describe('/help', () => {
+    it('bare /help', () => {
+      expect(parseSlashCommand('/help')).toEqual({ kind: 'help' });
+    });
+    it('/help <command>', () => {
+      expect(parseSlashCommand('/help save')).toEqual({ kind: 'help', command: 'save' });
+    });
+    it('/help /command (leading slash tolerated)', () => {
+      expect(parseSlashCommand('/help /save')).toEqual({ kind: 'help', command: 'save' });
+    });
+    it('lowercases the command name for lookup', () => {
+      expect(parseSlashCommand('/help SAVE')).toEqual({ kind: 'help', command: 'save' });
+    });
+    it('takes the first token only', () => {
+      expect(parseSlashCommand('/help save more args')).toEqual({
+        kind: 'help',
+        command: 'save',
+      });
+    });
+    it('trailing whitespace stays a bare /help', () => {
+      expect(parseSlashCommand('/help   ')).toEqual({ kind: 'help' });
+    });
+  });
 });

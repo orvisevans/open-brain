@@ -22,6 +22,9 @@ export type ParsedCommand =
   | { kind: 'find'; query: string }
   | { kind: 'archive'; target: NotePath }
   | { kind: 'tag'; target: NotePath; tags: string[] }
+  // Phase 5.9.2: deterministic help. `/help` lists all commands;
+  // `/help <command>` returns the section for that command.
+  | { kind: 'help'; command?: string }
   // `unknown` covers both "totally unrecognized" (no `reason`) and
   // "recognized command but missing required args" (with `reason`).
   // Dispatcher uses `reason` when present for a friendlier error message.
@@ -72,6 +75,9 @@ export function parseSlashCommand(input: string): ParsedCommand | undefined {
     case 'tag': {
       return parseTag(argumentsRaw, trimmed);
     }
+    case 'help': {
+      return parseHelp(argumentsRaw);
+    }
     case '': {
       return { kind: 'unknown', raw: trimmed };
     }
@@ -79,6 +85,16 @@ export function parseSlashCommand(input: string): ParsedCommand | undefined {
       return { kind: 'unknown', raw: trimmed };
     }
   }
+}
+
+function parseHelp(arguments_: string): ParsedCommand {
+  const trimmed = arguments_.trim();
+  if (trimmed === '') return { kind: 'help' };
+  // Accept either `/help save` or `/help /save` so the user can copy-paste a
+  // command name. Strip a single leading slash and lowercase for lookup.
+  const command = trimmed.replace(/^\/+/, '').split(/\s/)[0]?.toLowerCase() ?? '';
+  if (command === '') return { kind: 'help' };
+  return { kind: 'help', command };
 }
 
 // ── Per-command parsers ────────────────────────────────────────────────────

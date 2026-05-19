@@ -44,6 +44,14 @@ function setRoles(sidecar: Sidecar, roles: ('user' | 'assistant' | 'system')[]):
   }
 }
 
+function setMessageIndices(sidecar: Sidecar, indices: number[]): void {
+  for (const [index, messageIndex] of indices.entries()) {
+    const chunk = sidecar.embeddings[index];
+    if (chunk === undefined) throw new Error(`no chunk at index ${String(index)}`);
+    chunk.messageIndex = messageIndex;
+  }
+}
+
 class TestVault extends FakeVault {
   paths: string[] = [];
   chats: string[] = [];
@@ -61,6 +69,35 @@ class TestVault extends FakeVault {
   listChats(): Promise<string[]> {
     return Promise.resolve([...this.chats]);
   }
+}
+
+function buildChatVault(): TestVault {
+  const vault = new TestVault();
+  vault.seedChat('.chats/current.md');
+  vault.seedChat('.chats/other.md');
+  vault.seedNote('notes/note.md');
+
+  const currentChat = makeSidecar('.chats/current.md', [
+    { text: 'turn 0 content', vector: vec([1, 0, 0]) },
+    { text: 'turn 1 content', vector: vec([1, 0, 0]) },
+    { text: 'turn 2 content', vector: vec([1, 0, 0]) },
+    { text: 'turn 3 content', vector: vec([1, 0, 0]) },
+  ]);
+  setRoles(currentChat, ['user', 'user', 'user', 'user']);
+  setMessageIndices(currentChat, [0, 1, 2, 3]);
+  vault.setSidecar('.memory/.chats/current.md', serializeSidecar(currentChat));
+
+  const otherChat = makeSidecar('.chats/other.md', [
+    { text: 'other-session turn 0', vector: vec([1, 0, 0]) },
+  ]);
+  setRoles(otherChat, ['user']);
+  setMessageIndices(otherChat, [0]);
+  vault.setSidecar('.memory/.chats/other.md', serializeSidecar(otherChat));
+
+  const note = makeSidecar('notes/note.md', [{ text: 'note content', vector: vec([1, 0, 0]) }]);
+  vault.setSidecar('.memory/notes/note.md', serializeSidecar(note));
+
+  return vault;
 }
 
 describe('cosine', () => {
@@ -252,6 +289,85 @@ describe('retrieve', () => {
     });
     expect(result.chunks).toHaveLength(1);
     expect(result.chunks[0]?.text).toBe('apple');
+  });
+
+  // ── Phase 5.9.2 (B1): RetrievalFilter ──────────────────────────────────
+  describe('filter (B1: drop chunks already in live history)', () => {
+    it('drops chunks from the current session whose messageIndex is live', async () => {
+      const vault = buildChatVault();
+      const result = await retrieve(vault, 'q', {
+        k: 10,
+        embedQuery: () => Promise.resolve(vec([1, 0, 0])),
+        filter: {
+          chatPath: '.chats/current.md',
+          liveMessageIndices: new Set([2, 3]),
+        },
+      });
+      const currentPaths = result.chunks
+        .filter((c) => c.notePath === '.chats/current.md')
+        .map((c) => c.messageIndex);
+      // Turns 2 and 3 were in live history — dropped.
+      expect(currentPaths).not.toContain(2);
+      expect(currentPaths).not.toContain(3);
+      // Turns 0 and 1 aged out via sliding-window trim — still retrievable.
+      expect(currentPaths).toContain(0);
+      expect(currentPaths).toContain(1);
+    });
+
+    it('keeps chunks from a DIFFERENT chat session even when message indices overlap', async () => {
+      const vault = buildChatVault();
+      const result = await retrieve(vault, 'q', {
+        k: 10,
+        embedQuery: () => Promise.resolve(vec([1, 0, 0])),
+        filter: {
+          chatPath: '.chats/current.md',
+          // 0 is a live index in the CURRENT session — should not affect other.md.
+          liveMessageIndices: new Set([0, 1, 2, 3]),
+        },
+      });
+      const otherChunks = result.chunks.filter((c) => c.notePath === '.chats/other.md');
+      expect(otherChunks).toHaveLength(1);
+      expect(otherChunks[0]?.messageIndex).toBe(0);
+    });
+
+    it('never drops note chunks regardless of filter', async () => {
+      const vault = buildChatVault();
+      const result = await retrieve(vault, 'q', {
+        k: 10,
+        embedQuery: () => Promise.resolve(vec([1, 0, 0])),
+        filter: {
+          chatPath: '.chats/current.md',
+          liveMessageIndices: new Set([0, 1, 2, 3]),
+        },
+      });
+      const noteChunks = result.chunks.filter((c) => c.source === 'note');
+      expect(noteChunks).toHaveLength(1);
+      expect(noteChunks[0]?.notePath).toBe('notes/note.md');
+    });
+
+    it('with no filter, returns all chat chunks (current behaviour preserved)', async () => {
+      const vault = buildChatVault();
+      const result = await retrieve(vault, 'q', {
+        k: 10,
+        embedQuery: () => Promise.resolve(vec([1, 0, 0])),
+      });
+      const currentChunks = result.chunks.filter((c) => c.notePath === '.chats/current.md');
+      expect(currentChunks).toHaveLength(4);
+    });
+
+    it('empty liveMessageIndices is a no-op (zero live, drop nothing)', async () => {
+      const vault = buildChatVault();
+      const result = await retrieve(vault, 'q', {
+        k: 10,
+        embedQuery: () => Promise.resolve(vec([1, 0, 0])),
+        filter: {
+          chatPath: '.chats/current.md',
+          liveMessageIndices: new Set<number>(),
+        },
+      });
+      const currentChunks = result.chunks.filter((c) => c.notePath === '.chats/current.md');
+      expect(currentChunks).toHaveLength(4);
+    });
   });
 });
 

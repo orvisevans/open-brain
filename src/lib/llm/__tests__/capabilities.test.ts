@@ -4,8 +4,9 @@ import { CAPABILITIES_CHAR_CAP, CAPABILITIES_PROMPT, CAPABILITIES_VERSION } from
 
 describe('CAPABILITIES_PROMPT', () => {
   it('fits inside the token-budget character cap', () => {
-    // Phase 5.9 budget: ≤ 350 tokens at 0.3 tok/char ≈ 1500 chars.
-    // If this fails, trim the prompt — KV cache reuse and overall budget
+    // Phase 5.9.2 budget: ≤ ~330 tokens at 0.3 tok/char ≈ 1100 chars.
+    // Tightened from 1500 now that per-command descriptions live in the
+    // help corpus under .openbrain/help/. KV cache reuse and overall budget
     // (capabilities + persona + retrieval guardrails + slash-emit) depend
     // on this slot staying lean.
     expect(CAPABILITIES_PROMPT.length).toBeLessThanOrEqual(CAPABILITIES_CHAR_CAP);
@@ -30,6 +31,7 @@ describe('CAPABILITIES_PROMPT', () => {
       '/organize',
       '/archive',
       '/tag',
+      '/help',
     ]) {
       expect(CAPABILITIES_PROMPT).toContain(command);
     }
