@@ -254,8 +254,10 @@
   .browse {
     display: grid;
     grid-template-columns: 16rem 1fr;
-    height: calc(100dvh - 6rem); /* leave room for tab bar + status bar */
-    margin: -1rem; /* cancel layout's content padding so we own this rectangle */
+    flex: 1;
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
   }
 
   .sidebar {

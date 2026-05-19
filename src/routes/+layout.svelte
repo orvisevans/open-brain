@@ -95,6 +95,14 @@
     return page.url.pathname === path || page.url.pathname.startsWith(`${path}/`);
   }
 
+  // Chat and browse own scrolling inside panes; other routes scroll the main column.
+  const isFillRoute = $derived(
+    page.url.pathname === '/chat' ||
+      page.url.pathname.startsWith('/chat/') ||
+      page.url.pathname === '/browse' ||
+      page.url.pathname.startsWith('/browse/'),
+  );
+
   // Bootstrap the memory pipeline once on mount: hydrate the embedding queue
   // from IndexedDB, start user-activity gates, and subscribe to vault writes.
   $effect(() => {
@@ -229,7 +237,7 @@
     <a href="/setup" aria-current={isActive('/setup') ? 'page' : undefined}>Setup</a>
   </nav>
 
-  <main class="content">
+  <main class="content" class:fill={isFillRoute}>
     {@render children?.()}
   </main>
 
@@ -268,12 +276,15 @@
 
 <style>
   .shell {
-    min-height: 100dvh;
+    height: 100dvh;
+    max-height: 100dvh;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
   }
 
   .tab-bar {
+    flex-shrink: 0;
     display: flex;
     gap: 1rem;
     padding: 0.5rem 1rem;
@@ -296,10 +307,21 @@
 
   .content {
     flex: 1;
+    min-height: 0;
     padding: 1rem;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  .content.fill {
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
 
   .status-bar {
+    flex-shrink: 0;
     display: flex;
     gap: 1rem;
     align-items: center;

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import type { ChatCompletionMessageParam } from '@mlc-ai/web-llm';
 
   import {
@@ -125,6 +126,10 @@
   // Phase 5.5: mention popover state. Caret-tracked; index rebuilt on vault
   // change events so newly-saved notes show up immediately.
   let textareaElement = $state<HTMLTextAreaElement | undefined>(undefined);
+  let messagesElement = $state<HTMLDivElement | undefined>(undefined);
+  let stickToBottom = $state(true);
+
+  const SCROLL_BOTTOM_THRESHOLD_PX = 64;
   let mentionPaths = $state<string[]>([]);
   let mentionStart = $state<number | undefined>(undefined);
   let mentionMatches = $state<MentionMatch[]>([]);
@@ -313,7 +318,33 @@
 
   function selectSession(id: string): void {
     const found = allSessions.find((entry) => entry.id === id);
-    if (found !== undefined) session = found;
+    if (found === undefined) return;
+    session = found;
+    stickToBottom = true;
+    void scrollMessagesToBottom(true);
+  }
+
+  function isNearBottom(element: HTMLDivElement): boolean {
+    const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
+    return distance <= SCROLL_BOTTOM_THRESHOLD_PX;
+  }
+
+  function handleMessagesScroll(): void {
+    if (messagesElement === undefined) return;
+    stickToBottom = isNearBottom(messagesElement);
+  }
+
+  async function scrollMessagesToBottom(force = false): Promise<void> {
+    if (!force && !stickToBottom) return;
+    await tick();
+    const element = messagesElement;
+    if (element === undefined) return;
+    element.scrollTop = element.scrollHeight;
+  }
+
+  async function focusInput(): Promise<void> {
+    await tick();
+    textareaElement?.focus();
   }
 
   // ── Send turn ────────────────────────────────────────────────────────────
@@ -330,13 +361,17 @@
     const parsed = parseSlashCommand(text);
     if (parsed !== undefined) {
       input = '';
+      stickToBottom = true;
       await handleSlashCommand(text, parsed, current);
+      void scrollMessagesToBottom(true);
+      await focusInput();
       return;
     }
 
     // Normal chat path requires the model.
     if (!model.loaded) return;
     input = '';
+    stickToBottom = true;
     isStreaming = true;
     streamingOutput = '';
     streamingCitations = [];
@@ -350,6 +385,7 @@
     };
     let working = await appendMessage(chatVault, current, userMessage);
     session = working;
+    void scrollMessagesToBottom(true);
 
     try {
       // Phase 5.7: pass listChats so chat-RAG can surface past conversations.
@@ -450,6 +486,7 @@
       streamingOutput = '';
       streamingCitations = [];
       phase = 'idle';
+      await focusInput();
     }
   }
 
@@ -812,6 +849,14 @@
 
   const visibleMessages = $derived(session?.messages ?? []);
 
+  $effect(() => {
+    void visibleMessages.length;
+    void streamingOutput.length;
+    void pendingProposals.length;
+    void isStreaming;
+    void scrollMessagesToBottom();
+  });
+
   function formatSessionLabel(entry: ChatSession): string {
     const first = entry.messages.find((message) => message.role === 'user');
     const head = first?.content.split('\n')[0]?.slice(0, 40);
@@ -875,7 +920,14 @@
         </div>
       </div>
     {/if}
-    <div class="messages" role="log" aria-live="polite" aria-label="Chat messages">
+    <div
+      class="messages"
+      role="log"
+      aria-live="polite"
+      aria-label="Chat messages"
+      bind:this={messagesElement}
+      onscroll={handleMessagesScroll}
+    >
       {#each visibleMessages as message (message.id)}
         <div class="message {message.role}">
           <span class="role">{roleLabel(message.role)}</span>
@@ -976,7 +1028,6 @@
           oninput={handleInput}
           onclick={updateMentionState}
           onkeyup={updateMentionState}
-          disabled={isStreaming}
           aria-label="Chat input"
         ></textarea>
         {#if micAvailable}
@@ -1035,17 +1086,24 @@
   .chat {
     display: grid;
     grid-template-columns: 14rem 1fr;
-    gap: 1rem;
-    height: calc(100dvh - 6rem);
+    gap: 0;
+    flex: 1;
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
   }
 
   .sessions {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
     border-right: 1px solid var(--color-border);
-    padding-right: 0.5rem;
-    overflow-y: auto;
+    padding: 0.5rem 0.5rem 0.5rem 0.75rem;
   }
 
   .sessions-head {
+    flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -1056,6 +1114,9 @@
   }
 
   .session-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
     list-style: none;
     padding: 0;
     margin: 0;
@@ -1109,10 +1170,14 @@
     flex-direction: column;
     gap: 0.75rem;
     min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0.5rem 0.75rem 0.5rem 0.5rem;
   }
 
   .messages {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
@@ -1204,9 +1269,11 @@
     flex-direction: column;
     gap: 0.4rem;
     position: relative;
+    flex-shrink: 0;
   }
 
   .daily-review {
+    flex-shrink: 0;
     border: 1px solid var(--color-accent);
     border-radius: 4px;
     padding: 0.6rem 0.75rem;
@@ -1301,6 +1368,7 @@
   }
 
   .hint {
+    flex-shrink: 0;
     font-size: 0.875rem;
     opacity: 0.6;
   }
